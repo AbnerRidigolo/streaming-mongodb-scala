@@ -1,0 +1,20 @@
+{
+  "type": "record",
+  "name": "PaymentEvent",
+  "namespace": "br.com.olist.events",
+  "fields": [
+    { "name": "event_id",        "type": "string" },
+    { "name": "order_id",        "type": "string" },
+    { "name": "payment_type",    "type": { "type": "enum", "name": "PaymentType",
+                                  "symbols": ["CREDIT_CARD","BOLETO","VOUCHER","DEBIT_CARD"] } },
+    { "name": "payment_value",   "type": "double" },
+    { "name": "installments",    "type": "int", "default": 1 },
+    { "name": "event_timestamp", "type": { "type": "long", "logicalType": "timestamp-millis" } },
+    { "name": "metadata",        "type": { "type": "record", "name": "PaymentMetadata",
+                                  "fields": [
+                                    { "name": "source",      "type": "string" },
+                                    { "name": "version",     "type": "string", "default": "1.0" },
+                                    { "name": "producer_id", "type": "string" }
+                                  ]} }
+  ]
+}

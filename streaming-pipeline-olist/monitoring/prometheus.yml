@@ -1,0 +1,44 @@
+# =============================================================================
+# Prometheus scrape configuration for the Olist streaming pipeline.
+# =============================================================================
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    pipeline: olist-streaming
+
+scrape_configs:
+  # ---- Prometheus self-monitoring ----
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # ---- Producers (prometheus_client HTTP server on :8000) ----
+  # Exposes kafka_messages_produced_total{topic,status}.
+  - job_name: producers
+    static_configs:
+      - targets:
+          - "orders-producer:8000"
+        labels:
+          component: producer
+
+  # ---- Spark master / driver metrics ----
+  # Requires the PrometheusServlet sink (metrics.properties) to be enabled on
+  # the Spark master; the path below is the Spark 3.x convention.
+  - job_name: spark
+    metrics_path: /metrics/prometheus/
+    static_configs:
+      - targets:
+          - "spark-master:8080"
+        labels:
+          component: spark
+
+  # ---- Kafka broker JVM / JMX metrics ----
+  # Requires the JMX Prometheus javaagent on the broker (KAFKA_OPTS) exporting
+  # on :9101. Left here as the documented scrape target.
+  - job_name: kafka-jmx
+    static_configs:
+      - targets:
+          - "kafka:9101"
+        labels:
+          component: kafka

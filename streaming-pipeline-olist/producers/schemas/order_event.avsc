@@ -1,0 +1,24 @@
+{
+  "type": "record",
+  "name": "OrderEvent",
+  "namespace": "br.com.olist.events",
+  "fields": [
+    { "name": "event_id",         "type": "string" },
+    { "name": "event_type",       "type": { "type": "enum", "name": "OrderEventType",
+                                   "symbols": ["ORDER_CREATED","ORDER_APPROVED",
+                                               "ORDER_SHIPPED","ORDER_DELIVERED","ORDER_CANCELED"]} },
+    { "name": "order_id",         "type": "string" },
+    { "name": "customer_id",      "type": "string" },
+    { "name": "seller_id",        "type": ["null","string"], "default": null },
+    { "name": "payment_value",    "type": ["null","double"], "default": null },
+    { "name": "product_category", "type": ["null","string"], "default": null },
+    { "name": "customer_state",   "type": "string" },
+    { "name": "event_timestamp",  "type": { "type": "long", "logicalType": "timestamp-millis" } },
+    { "name": "metadata",         "type": { "type": "record", "name": "EventMetadata",
+                                   "fields": [
+                                     { "name": "source",      "type": "string" },
+                                     { "name": "version",     "type": "string", "default": "1.0" },
+                                     { "name": "producer_id", "type": "string" }
+                                   ]} }
+  ]
+}

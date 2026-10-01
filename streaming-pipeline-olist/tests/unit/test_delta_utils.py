@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 from pyspark.sql import SparkSession
 
 from utils.delta_utils import compact_delta_table, get_table_stats, upsert_delta

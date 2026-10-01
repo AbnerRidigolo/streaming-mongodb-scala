@@ -120,7 +120,7 @@ class OrdersProducer(BaseProducer):
 
         items_path = self.data_dir / "olist_order_items_dataset.csv"
         totals: dict[str, float] = defaultdict(float)
-        sellers: dict[str, str] = {}
+        sellers: dict[str, str | None] = {}
         first_product: dict[str, str] = {}
         with open(items_path, newline="", encoding="utf-8") as handle:
             for row in csv.DictReader(handle):

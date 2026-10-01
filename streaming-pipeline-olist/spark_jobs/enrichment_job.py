@@ -14,6 +14,7 @@ import os
 import structlog
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql.streaming import StreamingQuery
 
 log = structlog.get_logger("enrichment_job")
 
@@ -78,7 +79,7 @@ def enrich(events: DataFrame, customers: DataFrame) -> DataFrame:
     )
 
 
-def run_enrichment_job(spark: SparkSession) -> "StreamingQuery":  # noqa: F821
+def run_enrichment_job(spark: SparkSession) -> StreamingQuery:
     """Start the Bronze → Silver enrichment streaming query.
 
     Args:

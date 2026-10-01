@@ -21,6 +21,7 @@ import os
 import structlog
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql.streaming import StreamingQuery
 from pyspark.sql.window import Window
 
 from utils.delta_utils import upsert_delta
@@ -173,7 +174,7 @@ def finalize_global_rate(base: DataFrame) -> DataFrame:
     )
 
 
-def run_aggregation_job(spark: SparkSession) -> list["StreamingQuery"]:  # noqa: F821
+def run_aggregation_job(spark: SparkSession) -> list[StreamingQuery]:
     """Start both Gold aggregation streaming queries.
 
     Args:

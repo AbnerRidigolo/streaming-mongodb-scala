@@ -16,6 +16,7 @@ from typing import Final
 import structlog
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql.streaming import StreamingQuery
 from pyspark.sql import types as T
 
 from utils.delta_utils import upsert_delta
@@ -123,7 +124,7 @@ def _add_audit_columns(df: DataFrame) -> DataFrame:
     )
 
 
-def run_ingestion_job(spark: SparkSession) -> "StreamingQuery":  # noqa: F821
+def run_ingestion_job(spark: SparkSession) -> StreamingQuery:
     """Start the Kafka → Bronze ingestion streaming query.
 
     Args:

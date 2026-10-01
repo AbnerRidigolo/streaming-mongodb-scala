@@ -1,9 +1,7 @@
 # ⚡ Real-time Streaming Pipeline — Olist
 
-[![CI](https://img.shields.io/badge/CI-passing-brightgreen)](#)
-[![Coverage](https://img.shields.io/badge/coverage-87%25-green)](#)
 [![Python](https://img.shields.io/badge/python-3.11-blue)](#)
-[![Kafka](https://img.shields.io/badge/Kafka-7.5-231F20?logo=apachekafka)](#)
+[![Confluent Platform](https://img.shields.io/badge/Confluent%20Platform-7.5%20(Kafka%203.5)-231F20?logo=apachekafka)](#)
 [![Spark](https://img.shields.io/badge/Spark-3.4-E25A1C?logo=apachespark)](#)
 [![Delta Lake](https://img.shields.io/badge/Delta%20Lake-2.4-00ADD8)](#)
 

@@ -13,7 +13,6 @@ import uuid
 
 import pytest
 from pyspark.sql import SparkSession
-from pyspark.sql import functions as F
 
 from ingestion_job import (
     ORDER_EVENT_SCHEMA,

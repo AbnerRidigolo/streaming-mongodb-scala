@@ -86,11 +86,15 @@ def get_kpi_summary(spark: SparkSession, gold_path: str) -> dict[str, float]:
     if df is None:
         return empty
 
-    row = _tumbling(df).agg(
-        F.sum("total_orders").alias("total_orders"),
-        F.sum("total_revenue").alias("total_revenue"),
-        F.sum("unique_customers").alias("unique_customers"),
-    ).collect()
+    row = (
+        _tumbling(df)
+        .agg(
+            F.sum("total_orders").alias("total_orders"),
+            F.sum("total_revenue").alias("total_revenue"),
+            F.sum("unique_customers").alias("unique_customers"),
+        )
+        .collect()
+    )
     if not row or row[0]["total_orders"] is None:
         return empty
 

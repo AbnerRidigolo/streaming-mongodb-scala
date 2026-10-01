@@ -37,7 +37,9 @@ def _silver(spark: SparkSession, rows: list[tuple]) -> DataFrame:
 def test_window_aggregation_counts_orders(spark: SparkSession) -> None:
     """Each populated window counts every order in it."""
     ts = datetime(2024, 1, 1, 12, 0, 10)
-    rows = [(f"c{i}", "SP", "beleza", 100.0, False, "ORDER_CREATED", ts) for i in range(5)]
+    rows = [
+        (f"c{i}", "SP", "beleza", 100.0, False, "ORDER_CREATED", ts) for i in range(5)
+    ]
     agg = aggregate_state_category(_silver(spark, rows))
 
     max_orders = agg.agg(F.max("total_orders").alias("m")).collect()[0]["m"]

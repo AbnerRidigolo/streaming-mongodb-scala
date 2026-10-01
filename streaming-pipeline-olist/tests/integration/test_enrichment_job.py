@@ -71,9 +71,7 @@ def test_delivery_sla_tier_other_is_d8(
     assert enriched.collect()[0]["delivery_sla_tier"] == "D+8"
 
 
-def test_revenue_bucket_low_below_50(
-    spark: SparkSession, tmp_delta_path: str
-) -> None:
+def test_revenue_bucket_low_below_50(spark: SparkSession, tmp_delta_path: str) -> None:
     """Orders below R$50 are bucketed as 'low'."""
     events = _events(
         spark,

@@ -75,8 +75,7 @@ def _kafka_lag() -> int | None:
                 return None
             parts = [TopicPartition(ORDERS_TOPIC, p) for p in meta.partitions]
             committed = {
-                tp.partition: tp.offset
-                for tp in consumer.committed(parts, timeout=5)
+                tp.partition: tp.offset for tp in consumer.committed(parts, timeout=5)
             }
             lag = 0
             for pid in meta.partitions:
@@ -101,7 +100,9 @@ def render_sidebar(spark, pipeline_ok: bool) -> None:
     """
     st.sidebar.header("🛰️ Pipeline status")
     status_color = "🟢" if pipeline_ok else "🔴"
-    st.sidebar.markdown(f"**Jobs:** {status_color} {'active' if pipeline_ok else 'idle'}")
+    st.sidebar.markdown(
+        f"**Jobs:** {status_color} {'active' if pipeline_ok else 'idle'}"
+    )
 
     lag = _kafka_lag()
     lag_label = "n/a" if lag is None else f"{lag:,}"

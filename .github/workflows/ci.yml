@@ -10,10 +10,6 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-defaults:
-  run:
-    working-directory: streaming-pipeline-olist
-
 jobs:
   python-lint:
     name: Python lint (black, flake8, mypy)
@@ -24,7 +20,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: streaming-pipeline-olist/requirements*.txt
+          cache-dependency-path: requirements*.txt
       - run: pip install -r requirements-dev.txt
       - run: black --check producers spark_jobs dashboard scripts tests
       - run: flake8 producers spark_jobs dashboard scripts tests
@@ -39,7 +35,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: streaming-pipeline-olist/requirements*.txt
+          cache-dependency-path: requirements*.txt
       # Spark 3.4 supports Java 8/11/17 only; runner default may be newer.
       - uses: actions/setup-java@v4
         with:
@@ -49,7 +45,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.ivy2
-          key: ivy-${{ runner.os }}-${{ hashFiles('streaming-pipeline-olist/requirements.txt') }}
+          key: ivy-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
       - run: pip install -r requirements-dev.txt
       # Tests needing a live broker are skipped unless RUN_KAFKA_IT=1.
       - run: >

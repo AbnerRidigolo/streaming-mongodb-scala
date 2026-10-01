@@ -72,7 +72,7 @@ de negócio atualizadas a cada 5 segundos. Observabilidade completa com
 
 ```bash
 # 1. Clonar
-git clone <seu-fork> && cd streaming-pipeline-olist
+git clone <seu-fork> && cd streaming-pipeline-real-time
 
 # 2. Subir infra, criar tópicos, registrar schemas, preparar dados
 make setup

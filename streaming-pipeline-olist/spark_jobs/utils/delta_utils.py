@@ -98,10 +98,7 @@ def _last_operation_metrics(spark: SparkSession, path: str) -> dict[str, Any]:
         The operation metrics as a ``dict`` (empty if unavailable).
     """
     history = (
-        DeltaTable.forPath(spark, path)
-        .history(1)
-        .select("operationMetrics")
-        .collect()
+        DeltaTable.forPath(spark, path).history(1).select("operationMetrics").collect()
     )
     if not history or history[0][0] is None:
         return {}
@@ -160,9 +157,7 @@ def vacuum_delta_table(
             below 168 temporarily disable the retention-duration safety check.
     """
     if retention_hours < 168:
-        spark.conf.set(
-            "spark.databricks.delta.retentionDurationCheck.enabled", "false"
-        )
+        spark.conf.set("spark.databricks.delta.retentionDurationCheck.enabled", "false")
     spark.sql(f"VACUUM delta.`{path}` RETAIN {retention_hours} HOURS")
     log.info("delta.vacuumed", path=path, retention_hours=retention_hours)
 

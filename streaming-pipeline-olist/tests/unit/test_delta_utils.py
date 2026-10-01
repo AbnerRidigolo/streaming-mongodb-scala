@@ -51,12 +51,12 @@ def test_upsert_is_idempotent(spark: SparkSession, tmp_delta_path: str) -> None:
     assert {r["value"] for r in result.collect()} == {"a", "b"}
 
 
-def test_upsert_returns_merge_stats(
-    spark: SparkSession, tmp_delta_path: str
-) -> None:
+def test_upsert_returns_merge_stats(spark: SparkSession, tmp_delta_path: str) -> None:
     """The merge returns a stats dict with the expected keys."""
     upsert_delta(spark, _df(spark, [(1, "a")]), tmp_delta_path, MERGE_ON)
-    stats = upsert_delta(spark, _df(spark, [(1, "b"), (2, "c")]), tmp_delta_path, MERGE_ON)
+    stats = upsert_delta(
+        spark, _df(spark, [(1, "b"), (2, "c")]), tmp_delta_path, MERGE_ON
+    )
 
     assert set(stats) == {"created", "rows_inserted", "rows_updated", "rows_deleted"}
     assert stats["created"] is False
@@ -64,9 +64,7 @@ def test_upsert_returns_merge_stats(
     assert stats["rows_updated"] == 1
 
 
-def test_compact_reduces_file_count(
-    spark: SparkSession, tmp_delta_path: str
-) -> None:
+def test_compact_reduces_file_count(spark: SparkSession, tmp_delta_path: str) -> None:
     """OPTIMIZE collapses many small files into fewer."""
     for i in range(6):
         (
@@ -87,7 +85,9 @@ def test_get_table_stats_returns_correct_schema(
     spark: SparkSession, tmp_delta_path: str
 ) -> None:
     """get_table_stats returns the documented keys with sane values."""
-    upsert_delta(spark, _df(spark, [(1, "a"), (2, "b"), (3, "c")]), tmp_delta_path, MERGE_ON)
+    upsert_delta(
+        spark, _df(spark, [(1, "a"), (2, "b"), (3, "c")]), tmp_delta_path, MERGE_ON
+    )
     stats = get_table_stats(spark, tmp_delta_path)
 
     assert set(stats) == {"num_files", "size_bytes", "num_rows", "last_modified"}

@@ -177,9 +177,7 @@ class BaseProducer(abc.ABC):
         """
         self.topic = topic
         self.events_per_second = max(1, int(events_per_second))
-        self.producer_id = producer_id or os.environ.get(
-            "PRODUCER_ID", "producer-001"
-        )
+        self.producer_id = producer_id or os.environ.get("PRODUCER_ID", "producer-001")
         self.source = source or self.__class__.__name__
         self.log = structlog.get_logger(self.__class__.__name__).bind(topic=topic)
 

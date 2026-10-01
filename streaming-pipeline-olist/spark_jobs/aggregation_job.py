@@ -138,7 +138,9 @@ def finalize_global_rate(base: DataFrame) -> DataFrame:
             F.row_number().over(window_key.orderBy(F.desc("state_orders"))),
         )
         .where(F.col("rnk") == 1)
-        .select("window_start", "window_end", F.col("customer_state").alias("top_state"))
+        .select(
+            "window_start", "window_end", F.col("customer_state").alias("top_state")
+        )
     )
 
     category_rank = (
@@ -157,9 +159,7 @@ def finalize_global_rate(base: DataFrame) -> DataFrame:
     )
 
     return (
-        totals.withColumn(
-            "orders_per_minute", F.round(F.col("total_orders") / 5.0, 2)
-        )
+        totals.withColumn("orders_per_minute", F.round(F.col("total_orders") / 5.0, 2))
         .withColumn("revenue_rate", F.round(F.col("total_revenue") / 5.0, 2))
         .join(state_rank, ["window_start", "window_end"], "left")
         .join(category_rank, ["window_start", "window_end"], "left")
@@ -199,9 +199,7 @@ def run_aggregation_job(spark: SparkSession) -> list[StreamingQuery]:
     def _write_windows(batch_df: DataFrame, batch_id: int) -> None:
         if batch_df.rdd.isEmpty():
             return
-        prepared = batch_df.withColumn(
-            "window_date", F.to_date("window_start")
-        )
+        prepared = batch_df.withColumn("window_date", F.to_date("window_start"))
         stats = upsert_delta(
             spark=batch_df.sparkSession,
             df=prepared,
@@ -236,8 +234,7 @@ def run_aggregation_job(spark: SparkSession) -> list[StreamingQuery]:
             df=finalized,
             path=gold_rate_path,
             merge_condition=(
-                "t.window_start = s.window_start AND "
-                "t.window_end = s.window_end"
+                "t.window_start = s.window_start AND " "t.window_end = s.window_end"
             ),
             partition_cols=None,
         )

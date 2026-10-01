@@ -82,9 +82,7 @@ def get_consumer_lag(bootstrap_servers: str, topic: str, group_id: str) -> int:
         topic_meta = metadata.topics.get(topic)
         if topic_meta is None or topic_meta.error is not None:
             return 0
-        partitions = [
-            TopicPartition(topic, pid) for pid in topic_meta.partitions
-        ]
+        partitions = [TopicPartition(topic, pid) for pid in topic_meta.partitions]
         committed = consumer.committed(partitions, timeout=_OFFSET_TIMEOUT_SECONDS)
         committed_by_pid = {tp.partition: tp.offset for tp in committed}
         for pid in topic_meta.partitions:

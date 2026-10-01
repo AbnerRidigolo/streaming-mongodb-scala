@@ -64,8 +64,10 @@ def main() -> None:
             schema_id=schema_id,
             pre_existing=existed,
         )
-        print(f"  {subject:<24} -> schema id {schema_id} "
-              f"({'existing' if existed else 'new'})")
+        print(
+            f"  {subject:<24} -> schema id {schema_id} "
+            f"({'existing' if existed else 'new'})"
+        )
 
     log.info("register_schemas.done", count=len(SCHEMA_SPECS))
 

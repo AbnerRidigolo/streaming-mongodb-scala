@@ -146,9 +146,7 @@ def make_events_df(
     """
 
     def _make(events: list[dict[str, Any]]) -> DataFrame:
-        flat = [
-            {k: v for k, v in e.items() if k != "metadata"} for e in events
-        ]
+        flat = [{k: v for k, v in e.items() if k != "metadata"} for e in events]
         df = spark.createDataFrame(flat)
         return (
             df.withColumn(

@@ -25,15 +25,33 @@ from base_producer import BaseProducer, EventMetadata, configure_logging
 
 # Approximate (latitude, longitude) centroid per Brazilian state.
 _STATE_CENTROIDS: dict[str, tuple[float, float]] = {
-    "AC": (-9.02, -70.81), "AL": (-9.57, -36.78), "AP": (1.41, -51.77),
-    "AM": (-3.42, -65.86), "BA": (-12.96, -41.71), "CE": (-5.20, -39.53),
-    "DF": (-15.78, -47.93), "ES": (-19.18, -40.31), "GO": (-15.83, -49.84),
-    "MA": (-5.42, -45.44), "MT": (-12.64, -55.42), "MS": (-20.51, -54.54),
-    "MG": (-18.10, -44.38), "PA": (-3.79, -52.48), "PB": (-7.28, -36.72),
-    "PR": (-24.89, -51.55), "PE": (-8.38, -37.86), "PI": (-7.72, -42.73),
-    "RJ": (-22.91, -43.21), "RN": (-5.81, -36.59), "RS": (-30.17, -53.50),
-    "RO": (-10.83, -63.34), "RR": (1.99, -61.33), "SC": (-27.45, -50.95),
-    "SP": (-22.19, -48.79), "SE": (-10.57, -37.45), "TO": (-9.46, -48.26),
+    "AC": (-9.02, -70.81),
+    "AL": (-9.57, -36.78),
+    "AP": (1.41, -51.77),
+    "AM": (-3.42, -65.86),
+    "BA": (-12.96, -41.71),
+    "CE": (-5.20, -39.53),
+    "DF": (-15.78, -47.93),
+    "ES": (-19.18, -40.31),
+    "GO": (-15.83, -49.84),
+    "MA": (-5.42, -45.44),
+    "MT": (-12.64, -55.42),
+    "MS": (-20.51, -54.54),
+    "MG": (-18.10, -44.38),
+    "PA": (-3.79, -52.48),
+    "PB": (-7.28, -36.72),
+    "PR": (-24.89, -51.55),
+    "PE": (-8.38, -37.86),
+    "PI": (-7.72, -42.73),
+    "RJ": (-22.91, -43.21),
+    "RN": (-5.81, -36.59),
+    "RS": (-30.17, -53.50),
+    "RO": (-10.83, -63.34),
+    "RR": (1.99, -61.33),
+    "SC": (-27.45, -50.95),
+    "SP": (-22.19, -48.79),
+    "SE": (-10.57, -37.45),
+    "TO": (-9.46, -48.26),
     "NA": (-14.24, -51.93),  # Brazil centroid fallback
 }
 
@@ -174,9 +192,7 @@ class DeliveryProducer(BaseProducer):
             round(lon + random.uniform(-1.5, 1.5), 6),
         )
 
-    def _new_event(
-        self, order_id: str, state: str, status: str
-    ) -> DeliveryEvent:
+    def _new_event(self, order_id: str, state: str, status: str) -> DeliveryEvent:
         """Construct a single :class:`DeliveryEvent`.
 
         Args:
@@ -242,9 +258,7 @@ def main() -> None:
         data_dir=data_dir,
     )
     loop = os.environ.get("PRODUCER_LOOP", "true").lower() in {"1", "true", "yes"}
-    producer.produce_from_csv(
-        Path(data_dir) / "olist_orders_dataset.csv", loop=loop
-    )
+    producer.produce_from_csv(Path(data_dir) / "olist_orders_dataset.csv", loop=loop)
 
 
 if __name__ == "__main__":

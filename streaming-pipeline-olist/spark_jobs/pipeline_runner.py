@@ -107,9 +107,7 @@ class PipelineRunner:
             if self._restarts[name] > MAX_RESTARTS:
                 log.error("job.restart.exhausted", job=name, attempts=MAX_RESTARTS)
                 return
-            log.warning(
-                "job.restarting", job=name, attempt=self._restarts[name]
-            )
+            log.warning("job.restarting", job=name, attempt=self._restarts[name])
             self._shutdown.wait(5)
 
     def _monitor_queries(self, name: str, queries: list[Any]) -> None:

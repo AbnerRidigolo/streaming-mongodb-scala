@@ -55,9 +55,7 @@ def enrich(events: DataFrame, customers: DataFrame) -> DataFrame:
         The enriched DataFrame with the derived attribute columns added.
     """
     customers_dedup = customers.dropDuplicates(["customer_id"])
-    joined = events.join(
-        F.broadcast(customers_dedup), on="customer_id", how="left"
-    )
+    joined = events.join(F.broadcast(customers_dedup), on="customer_id", how="left")
 
     payment = F.coalesce(F.col("payment_value"), F.lit(0.0))
     return (

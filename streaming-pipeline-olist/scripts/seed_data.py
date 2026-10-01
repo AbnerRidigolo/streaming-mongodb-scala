@@ -33,9 +33,16 @@ REQUIRED_FILES = [
 
 _STATES = ["SP", "RJ", "MG", "ES", "RS", "PR", "SC", "BA", "PE", "CE", "GO", "DF"]
 _CATEGORIES = [
-    "beleza_saude", "informatica_acessorios", "cama_mesa_banho",
-    "moveis_decoracao", "esporte_lazer", "brinquedos", "relogios_presentes",
-    "telefonia", "automotivo", "eletronicos",
+    "beleza_saude",
+    "informatica_acessorios",
+    "cama_mesa_banho",
+    "moveis_decoracao",
+    "esporte_lazer",
+    "brinquedos",
+    "relogios_presentes",
+    "telefonia",
+    "automotivo",
+    "eletronicos",
 ]
 _PAYMENT_TYPES = ["credit_card", "boleto", "voucher", "debit_card"]
 
@@ -72,12 +79,13 @@ def generate_sample(data_dir: Path, n_customers: int, n_orders: int) -> None:
     )
 
     products = [
-        {"product_id": f"prod_{i:05d}", "product_category_name": random.choice(_CATEGORIES)}
+        {
+            "product_id": f"prod_{i:05d}",
+            "product_category_name": random.choice(_CATEGORIES),
+        }
         for i in range(200)
     ]
-    pd.DataFrame(products).to_csv(
-        data_dir / "olist_products_dataset.csv", index=False
-    )
+    pd.DataFrame(products).to_csv(data_dir / "olist_products_dataset.csv", index=False)
 
     orders, items, payments = [], [], []
     for i in range(n_orders):
@@ -118,9 +126,7 @@ def generate_sample(data_dir: Path, n_customers: int, n_orders: int) -> None:
         )
 
     pd.DataFrame(orders).to_csv(data_dir / "olist_orders_dataset.csv", index=False)
-    pd.DataFrame(items).to_csv(
-        data_dir / "olist_order_items_dataset.csv", index=False
-    )
+    pd.DataFrame(items).to_csv(data_dir / "olist_order_items_dataset.csv", index=False)
     pd.DataFrame(payments).to_csv(
         data_dir / "olist_order_payments_dataset.csv", index=False
     )
@@ -162,9 +168,7 @@ def main() -> None:
     args = parser.parse_args()
 
     data_dir = Path(os.environ.get("DATA_DIR", "data/raw"))
-    customers_path = Path(
-        os.environ.get("CUSTOMERS_PATH", "data/reference/customers")
-    )
+    customers_path = Path(os.environ.get("CUSTOMERS_PATH", "data/reference/customers"))
 
     if args.sample:
         generate_sample(data_dir, args.customers, args.orders)

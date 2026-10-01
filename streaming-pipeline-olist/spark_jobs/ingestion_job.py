@@ -50,7 +50,9 @@ ORDER_EVENT_SCHEMA: Final[T.StructType] = T.StructType(
 )
 
 # --- Avro reader schema (Confluent wire format) ------------------------------
-ORDER_EVENT_AVRO: Final[str] = """
+ORDER_EVENT_AVRO: Final[
+    str
+] = """
 {
   "type": "record", "name": "OrderEvent", "namespace": "br.com.olist.events",
   "fields": [
@@ -92,14 +94,10 @@ def _parse_kafka_value(raw: DataFrame, value_format: str) -> DataFrame:
 
         # Strip the 5-byte Confluent header (magic byte + 4-byte schema id).
         stripped = F.expr("substring(value, 6, length(value) - 5)")
-        decoded = raw.select(
-            from_avro(stripped, ORDER_EVENT_AVRO).alias("data")
-        )
+        decoded = raw.select(from_avro(stripped, ORDER_EVENT_AVRO).alias("data"))
     else:
         decoded = raw.select(
-            F.from_json(F.col("value").cast("string"), ORDER_EVENT_SCHEMA).alias(
-                "data"
-            )
+            F.from_json(F.col("value").cast("string"), ORDER_EVENT_SCHEMA).alias("data")
         )
     return decoded.select("data.*").where(F.col("event_id").isNotNull())
 
@@ -115,9 +113,7 @@ def _add_audit_columns(df: DataFrame) -> DataFrame:
         and ``_hour``.
     """
     return (
-        df.withColumn(
-            "event_ts", (F.col("event_timestamp") / 1000).cast("timestamp")
-        )
+        df.withColumn("event_ts", (F.col("event_timestamp") / 1000).cast("timestamp"))
         .withColumn("_ingested_at", F.current_timestamp())
         .withColumn("_date", F.to_date(F.col("event_ts")))
         .withColumn("_hour", F.hour(F.col("event_ts")))

@@ -166,9 +166,7 @@ class OrdersProducer(BaseProducer):
         with open(csv_path, newline="", encoding="utf-8") as handle:
             for row in csv.DictReader(handle):
                 oid = row["order_id"]
-                value, seller_id = self._items.get(
-                    oid, (_DEFAULT_PAYMENT_VALUE, None)
-                )
+                value, seller_id = self._items.get(oid, (_DEFAULT_PAYMENT_VALUE, None))
                 yield {
                     "order_id": oid,
                     "customer_id": row["customer_id"],
@@ -254,9 +252,7 @@ def main() -> None:
         cancellation_rate=float(os.environ.get("CANCELLATION_RATE", "0.12")),
     )
     loop = os.environ.get("PRODUCER_LOOP", "true").lower() in {"1", "true", "yes"}
-    producer.produce_from_csv(
-        Path(data_dir) / "olist_orders_dataset.csv", loop=loop
-    )
+    producer.produce_from_csv(Path(data_dir) / "olist_orders_dataset.csv", loop=loop)
 
 
 if __name__ == "__main__":

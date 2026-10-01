@@ -98,19 +98,36 @@ def main() -> int:
 
     checks.append(("Spark master", *_check_http("Spark", spark_ui)))
     checks.append(
-        ("Bronze Delta", *_check_delta(os.environ.get("BRONZE_PATH", "data/bronze/orders")))
+        (
+            "Bronze Delta",
+            *_check_delta(os.environ.get("BRONZE_PATH", "data/bronze/orders")),
+        )
     )
     checks.append(
-        ("Silver Delta", *_check_delta(os.environ.get("SILVER_PATH", "data/silver/orders_enriched")))
+        (
+            "Silver Delta",
+            *_check_delta(os.environ.get("SILVER_PATH", "data/silver/orders_enriched")),
+        )
     )
     checks.append(
-        ("Gold Delta", *_check_delta(os.environ.get("GOLD_PATH", "data/gold/orders_agg")))
+        (
+            "Gold Delta",
+            *_check_delta(os.environ.get("GOLD_PATH", "data/gold/orders_agg")),
+        )
     )
     checks.append(
-        ("Dashboard", *_check_http("Dashboard", f"http://localhost:{dashboard_port}/_stcore/health"))
+        (
+            "Dashboard",
+            *_check_http(
+                "Dashboard", f"http://localhost:{dashboard_port}/_stcore/health"
+            ),
+        )
     )
     checks.append(
-        ("Prometheus", *_check_http("Prometheus", f"http://localhost:{prom_port}/-/healthy"))
+        (
+            "Prometheus",
+            *_check_http("Prometheus", f"http://localhost:{prom_port}/-/healthy"),
+        )
     )
 
     print("\n  Component            Status   Detail")

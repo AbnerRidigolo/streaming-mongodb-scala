@@ -25,6 +25,11 @@ services:
       ZOOKEEPER_TICK_TIME: 2000
       # cp-zookeeper 7.5 only whitelists `srvr`; the healthcheck needs `ruok`.
       KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok,srvr"
+    # Persist Zookeeper with Kafka: Kafka's volume stores the cluster id, and a
+    # fresh Zookeeper would hand out a new one, so the broker would not start.
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
     healthcheck:
       test: ["CMD", "bash", "-c", "echo ruok | nc localhost 2181 | grep imok"]
       interval: 10s
@@ -312,6 +317,8 @@ networks:
     name: streaming-network
 
 volumes:
+  zookeeper-data:
+  zookeeper-log:
   kafka-data:
   spark-checkpoints:
   grafana-data:

@@ -17,7 +17,7 @@ import pytest
 
 # --- Make project packages + script-style modules importable -----------------
 _ROOT = Path(__file__).resolve().parent.parent
-for _p in (_ROOT, _ROOT / "spark_jobs", _ROOT / "producers"):
+for _p in (_ROOT, _ROOT / "spark_jobs", _ROOT / "producers", _ROOT / "dashboard"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 

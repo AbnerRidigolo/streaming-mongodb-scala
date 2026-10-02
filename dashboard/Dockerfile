@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir \
     "delta-spark==2.4.0" \
     "streamlit==1.29.0" \
     "pandas==2.1.4" \
+    "pyarrow==14.0.2" \
     "altair==5.2.0" \
     "confluent-kafka==2.3.0" \
     "structlog==23.2.0"

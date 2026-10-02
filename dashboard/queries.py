@@ -53,6 +53,23 @@ def _load(spark: SparkSession, path: str) -> DataFrame | None:
         return None
 
 
+def _to_pandas(df: DataFrame) -> pd.DataFrame:
+    """Collect a Spark DataFrame to pandas through Arrow.
+
+    PySpark 3.4's non-Arrow ``toPandas`` casts timestamps to a unit-less
+    ``datetime64``, which pandas 2 rejects; the Arrow path converts them
+    correctly.
+
+    Args:
+        df: The Spark DataFrame to collect.
+
+    Returns:
+        The equivalent pandas DataFrame.
+    """
+    df.sparkSession.conf.set("spark.sql.execution.arrow.pyspark.enabled", "true")
+    return df.toPandas()
+
+
 def _tumbling(df: DataFrame) -> DataFrame:
     """Keep only minute-aligned windows to avoid overlap double counting.
 
@@ -124,13 +141,12 @@ def get_revenue_by_state(
     df = _load(spark, gold_path)
     if df is None:
         return _EMPTY
-    return (
+    return _to_pandas(
         _tumbling(df)
         .groupBy("customer_state")
         .agg(F.round(F.sum("total_revenue"), 2).alias("total_revenue"))
         .orderBy(F.desc("total_revenue"))
         .limit(limit)
-        .toPandas()
     )
 
 
@@ -150,13 +166,12 @@ def get_top_categories(
     df = _load(spark, gold_path)
     if df is None:
         return _EMPTY
-    return (
+    return _to_pandas(
         _tumbling(df)
         .groupBy("product_category")
         .agg(F.sum("total_orders").alias("total_orders"))
         .orderBy(F.desc("total_orders"))
         .limit(limit)
-        .toPandas()
     )
 
 
@@ -178,11 +193,10 @@ def get_orders_timeseries(
     if df is None:
         return _EMPTY
     cutoff = F.current_timestamp() - F.expr(f"INTERVAL {minutes} MINUTES")
-    return (
+    return _to_pandas(
         df.where(F.col("window_start") >= cutoff)
         .select("window_start", "orders_per_minute", "revenue_rate")
         .orderBy("window_start")
-        .toPandas()
     )
 
 
@@ -202,7 +216,7 @@ def get_recent_windows(
     df = _load(spark, gold_path)
     if df is None:
         return _EMPTY
-    return (
+    return _to_pandas(
         df.select(
             "window_start",
             "customer_state",
@@ -212,5 +226,4 @@ def get_recent_windows(
         )
         .orderBy(F.desc("window_start"))
         .limit(limit)
-        .toPandas()
     )

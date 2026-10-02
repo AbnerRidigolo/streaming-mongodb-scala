@@ -7,14 +7,18 @@ broker is reachable (``make up`` first).
 
 from __future__ import annotations
 
+import io
 import json
 import os
+import struct
 import uuid
 
+import fastavro
 import pytest
 from pyspark.sql import SparkSession
 
 from ingestion_job import (
+    ORDER_EVENT_AVRO,
     ORDER_EVENT_SCHEMA,
     _add_audit_columns,
     _parse_kafka_value,
@@ -53,6 +57,34 @@ def test_parse_kafka_value_json_decodes_all_fields(spark: SparkSession) -> None:
     assert row["customer_state"] == "SP"
     assert row["payment_value"] == 199.9
     assert row["metadata"]["producer_id"] == "pytest"
+
+
+def _confluent_avro(event: dict, schema_id: int = 1) -> bytes:
+    """Encode an event in the Confluent wire format (magic byte + id + Avro)."""
+    buf = io.BytesIO()
+    schema = fastavro.parse_schema(json.loads(ORDER_EVENT_AVRO))
+    fastavro.schemaless_writer(buf, schema, event)
+    return b"\x00" + struct.pack(">I", schema_id) + buf.getvalue()
+
+
+def test_parse_kafka_value_avro_keeps_epoch_millis(spark: SparkSession) -> None:
+    """The Avro path yields event_timestamp as epoch ms, like the JSON path.
+
+    ``from_avro`` maps ``timestamp-millis`` to a Spark TIMESTAMP; the audit
+    step divides by 1000, so the parser must hand back a long.
+    """
+    ts_ms = 1_700_000_000_123
+    event = json.loads(_event_json("e1", ts_ms))
+    raw = spark.createDataFrame([(bytearray(_confluent_avro(event)),)], ["value"])
+
+    parsed = _parse_kafka_value(raw, "avro")
+    assert dict(parsed.dtypes)["event_timestamp"] == "bigint"
+
+    row = _add_audit_columns(parsed).collect()[0]
+    assert row["event_id"] == "e1"
+    assert row["event_type"] == "ORDER_CREATED"
+    assert row["event_timestamp"] == ts_ms
+    assert row["event_ts"] is not None
 
 
 def test_add_audit_columns_adds_partition_columns(spark: SparkSession) -> None:

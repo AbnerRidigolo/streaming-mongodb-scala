@@ -94,12 +94,19 @@ def _parse_kafka_value(raw: DataFrame, value_format: str) -> DataFrame:
 
         # Strip the 5-byte Confluent header (magic byte + 4-byte schema id).
         stripped = F.expr("substring(value, 6, length(value) - 5)")
-        decoded = raw.select(from_avro(stripped, ORDER_EVENT_AVRO).alias("data"))
+        decoded = (
+            raw.select(from_avro(stripped, ORDER_EVENT_AVRO).alias("data")).select(
+                "data.*"
+            )
+            # from_avro maps timestamp-millis to TIMESTAMP; keep epoch millis so
+            # both paths match ORDER_EVENT_SCHEMA and _add_audit_columns.
+            .withColumn("event_timestamp", F.expr("unix_millis(event_timestamp)"))
+        )
     else:
         decoded = raw.select(
             F.from_json(F.col("value").cast("string"), ORDER_EVENT_SCHEMA).alias("data")
-        )
-    return decoded.select("data.*").where(F.col("event_id").isNotNull())
+        ).select("data.*")
+    return decoded.where(F.col("event_id").isNotNull())
 
 
 def _add_audit_columns(df: DataFrame) -> DataFrame:

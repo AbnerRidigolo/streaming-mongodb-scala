@@ -79,6 +79,16 @@ def get_streaming_session(
         # ---- Streaming checkpoint root ----
         .config("spark.sql.streaming.checkpointLocation", checkpoint)
         .config("spark.sql.session.timeZone", "UTC")
+        # ---- Prometheus metrics on the driver UI (/metrics/prometheus/) ----
+        .config(
+            "spark.metrics.conf.*.sink.prometheusServlet.class",
+            "org.apache.spark.metrics.sink.PrometheusServlet",
+        )
+        .config(
+            "spark.metrics.conf.*.sink.prometheusServlet.path", "/metrics/prometheus"
+        )
+        .config("spark.metrics.namespace", "olist")
+        .config("spark.sql.streaming.metricsEnabled", "true")
     )
 
     spark = builder.getOrCreate()

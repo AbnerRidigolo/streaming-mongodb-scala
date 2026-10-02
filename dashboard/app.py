@@ -2,7 +2,7 @@
 
 Reads the Gold Delta tables every few seconds and renders headline KPIs,
 revenue/category bar charts, an orders-per-minute time series and a table of the
-most recent windows. The sidebar surfaces pipeline health, Kafka consumer lag
+most recent windows. The sidebar surfaces pipeline health, the Kafka topic size
 and uptime. Designed for a continuously looping producer so the numbers keep
 climbing during a screen recording.
 """
@@ -22,7 +22,6 @@ REFRESH_SECONDS = 5
 GOLD_PATH = os.environ.get("GOLD_PATH", "data/gold/orders_agg")
 KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 ORDERS_TOPIC = os.environ.get("TOPIC_ORDERS_RAW", "orders-raw")
-INGESTION_GROUP = "spark-ingestion-job"
 
 
 @st.cache_resource(show_spinner=False)
@@ -51,11 +50,17 @@ def get_spark():
     return spark
 
 
-def _kafka_lag() -> int | None:
-    """Best-effort total consumer lag for the ingestion group.
+def _topic_events() -> int | None:
+    """Best-effort count of events currently retained in the orders topic.
+
+    Spark Structured Streaming tracks Kafka offsets in its checkpoint and does
+    not commit them to a consumer group, so a group-based lag would always
+    equal the whole topic. For ingestion throughput vs backlog, see the Spark
+    panel in Grafana.
 
     Returns:
-        Total lag, or ``None`` if Kafka is unreachable / client unavailable.
+        Sum of (high - low) watermarks across partitions, or ``None`` if Kafka
+        is unreachable / client unavailable.
     """
     try:
         from confluent_kafka import Consumer, TopicPartition
@@ -63,7 +68,7 @@ def _kafka_lag() -> int | None:
         consumer = Consumer(
             {
                 "bootstrap.servers": KAFKA_BOOTSTRAP,
-                "group.id": INGESTION_GROUP,
+                "group.id": "dashboard-offset-inspector",
                 "enable.auto.commit": False,
             }
         )
@@ -73,18 +78,13 @@ def _kafka_lag() -> int | None:
             )
             if meta is None or meta.error is not None:
                 return None
-            parts = [TopicPartition(ORDERS_TOPIC, p) for p in meta.partitions]
-            committed = {
-                tp.partition: tp.offset for tp in consumer.committed(parts, timeout=5)
-            }
-            lag = 0
+            total = 0
             for pid in meta.partitions:
-                _, high = consumer.get_watermark_offsets(
+                low, high = consumer.get_watermark_offsets(
                     TopicPartition(ORDERS_TOPIC, pid), timeout=5
                 )
-                offset = committed.get(pid, 0)
-                lag += max(0, high - (offset if offset and offset > 0 else 0))
-            return lag
+                total += max(0, high - low)
+            return total
         finally:
             consumer.close()
     except Exception:  # noqa: BLE001
@@ -92,7 +92,7 @@ def _kafka_lag() -> int | None:
 
 
 def render_sidebar(spark, pipeline_ok: bool) -> None:
-    """Render the sidebar with job status, Kafka lag and uptime.
+    """Render the sidebar with job status, Kafka topic size and uptime.
 
     Args:
         spark: Active SparkSession.
@@ -104,9 +104,9 @@ def render_sidebar(spark, pipeline_ok: bool) -> None:
         f"**Jobs:** {status_color} {'active' if pipeline_ok else 'idle'}"
     )
 
-    lag = _kafka_lag()
-    lag_label = "n/a" if lag is None else f"{lag:,}"
-    st.sidebar.metric("Kafka consumer lag", lag_label)
+    events = _topic_events()
+    events_label = "n/a" if events is None else f"{events:,}"
+    st.sidebar.metric(f"Eventos em {ORDERS_TOPIC}", events_label)
 
     started = st.session_state.get("started_at")
     if started:

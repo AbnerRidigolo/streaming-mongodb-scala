@@ -58,7 +58,7 @@
     },
     {
       "id": 3,
-      "title": "Consumer lag (records) — ingestion group",
+      "title": "Spark ingestion — input vs processing rate (rows/s)",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
@@ -68,11 +68,8 @@
       },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
       "targets": [
-        {
-          "refId": "A",
-          "expr": "max(kafka_consumer_consumer_fetch_manager_metrics_records_lag_max)",
-          "legendFormat": "max lag"
-        }
+        { "refId": "A", "expr": "metrics_olist_driver_spark_streaming_ingestion_bronze_inputRate_total_Value", "legendFormat": "input" },
+        { "refId": "B", "expr": "metrics_olist_driver_spark_streaming_ingestion_bronze_processingRate_total_Value", "legendFormat": "processed" }
       ]
     },
     {

@@ -51,7 +51,7 @@ de negócio atualizadas a cada 5 segundos. Observabilidade completa com
                                             │  KPIs · charts · tabela   │
                                             └──────────────────────────┘
 
-   PROMETHEUS  ◄── métricas (throughput, error rate, consumer lag) ──►  GRAFANA
+   PROMETHEUS  ◄── métricas (produtores + Spark streaming) ──►  GRAFANA
 ```
 
 ---
@@ -168,7 +168,7 @@ Grafana provisiona automaticamente o datasource Prometheus e o dashboard
 |---|---|
 | Throughput | `rate(kafka_messages_produced_total{status="success"}[1m])` |
 | Error rate | `rate(kafka_messages_produced_total{status="error"}[1m])` |
-| Consumer lag | lag por grupo de consumidores da ingestão |
+| Spark ingestion | `metrics_olist_driver_spark_streaming_ingestion_bronze_{inputRate,processingRate}_total_Value` |
 | Total produzido | `sum(kafka_messages_produced_total{status="success"})` |
 
 ```
@@ -177,7 +177,7 @@ Grafana provisiona automaticamente o datasource Prometheus e o dashboard
 │  [screenshot placeholder]  │  │  [screenshot placeholder]  │
 └───────────────────────────┘  └───────────────────────────┘
 ┌───────────────────────────┐  ┌───────────────────────────┐
-│  Consumer lag (records)    │  │  Total messages produced   │
+│  Spark ingestion (rows/s)  │  │  Total messages produced   │
 │  [screenshot placeholder]  │  │  [screenshot placeholder]  │
 └───────────────────────────┘  └───────────────────────────┘
 ```
@@ -201,9 +201,12 @@ Garanta ≥ 8 GB (idealmente 12 GB) disponíveis ao Docker.
 </details>
 
 <details>
-<summary><b>2. Consumer lag crescente</b></summary>
+<summary><b>2. Ingestão não acompanha a produção (backlog crescente)</b></summary>
 
-O lag aparece no dashboard (sidebar) e no Grafana. Causas comuns: `EVENTS_PER_SECOND`
+O Spark guarda os offsets do Kafka no checkpoint e não os confirma num consumer
+group, então não há "lag de grupo" para medir. Use o painel **Spark ingestion** do
+Grafana: se `processed` fica abaixo de `input` por vários minutos, o backlog está
+crescendo. Causas comuns: `EVENTS_PER_SECOND`
 alto demais para a capacidade do Spark, ou trigger muito curto. Aumente paralelismo
 (mais CPUs para o Docker; o `local[*]` usa todas), aumente `maxOffsetsPerTrigger` **com** mais memória, ou
 reduza a taxa de produção (`EVENTS_PER_SECOND`).
@@ -302,7 +305,7 @@ tests/          # unit, integration, e2e
 > os dois calos clássicos que derrubam pipelines de streaming em produção.
 >
 > 𝟯. 𝗢𝗯𝘀𝗲𝗿𝘃𝗮𝗯𝗶𝗹𝗶𝗱𝗮𝗱𝗲 𝗱𝗲𝘀𝗱𝗲 𝗼 𝗱𝗶𝗮 𝘇𝗲𝗿𝗼. Métricas Prometheus nos produtores
-> (throughput e error rate), consumer lag no dashboard e no Grafana, e um
+> (throughput e error rate), taxas de entrada/processamento do Spark no Grafana, e um
 > `check_pipeline.py` que valida Kafka, Schema Registry, Spark, Delta, dashboard e
 > Prometheus em um comando.
 >

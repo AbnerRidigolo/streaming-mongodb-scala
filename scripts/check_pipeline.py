@@ -1,7 +1,8 @@
 """Health check for every component of the streaming pipeline.
 
-Prints a status table covering Kafka + Schema Registry, the Spark master, the
-Delta tables (Bronze/Silver/Gold), the Streamlit dashboard and Prometheus.
+Prints a status table covering Kafka + Schema Registry, the Spark UI of the
+pipeline driver, the Delta tables (Bronze/Silver/Gold), the Streamlit dashboard
+and Prometheus.
 Exits non-zero if any *core* component (Kafka, Schema Registry) is down.
 """
 
@@ -82,7 +83,7 @@ def main() -> int:
     """Run every check, print the report and return a process exit code."""
     bootstrap = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
     schema_url = os.environ.get("SCHEMA_REGISTRY_URL", "http://localhost:8081")
-    spark_ui = os.environ.get("SPARK_MASTER_UI", "http://localhost:8090")
+    spark_ui = os.environ.get("SPARK_UI", "http://localhost:4040")
     dashboard_port = os.environ.get("DASHBOARD_PORT", "8501")
     prom_port = os.environ.get("PROMETHEUS_PORT", "9090")
 
@@ -96,7 +97,7 @@ def main() -> int:
     checks.append(("Schema Registry", ok, detail))
     core_ok = core_ok and ok
 
-    checks.append(("Spark master", *_check_http("Spark", spark_ui)))
+    checks.append(("Spark UI", *_check_http("Spark", spark_ui)))
     checks.append(
         (
             "Bronze Delta",

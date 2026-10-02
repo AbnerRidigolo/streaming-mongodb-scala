@@ -96,7 +96,7 @@ make dashboard            # http://localhost:8501
 |---|---|
 | Streamlit Dashboard | http://localhost:8501 |
 | Kafka UI | http://localhost:8080 |
-| Spark Master UI | http://localhost:8090 |
+| Spark UI (driver do pipeline) | http://localhost:4040 |
 | Grafana | http://localhost:3000 (`admin` / `admin`) |
 | Prometheus | http://localhost:9090 |
 | Schema Registry | http://localhost:8081 |
@@ -191,11 +191,8 @@ Grafana provisiona automaticamente o datasource Prometheus e o dashboard
 <details>
 <summary><b>1. OOM no Spark (executor/driver morre)</b></summary>
 
-Reduza o volume por micro-batch e a memória do worker:
-```yaml
-# docker-compose.yml → spark-worker
-SPARK_WORKER_MEMORY: 1G
-```
+O Spark roda em modo `local[*]` dentro do contêiner `spark-pipeline`.
+Reduza o volume por micro-batch:
 ```python
 # ingestion_job.py
 .option("maxOffsetsPerTrigger", "1000")   # de 10000
@@ -208,7 +205,7 @@ Garanta ≥ 8 GB (idealmente 12 GB) disponíveis ao Docker.
 
 O lag aparece no dashboard (sidebar) e no Grafana. Causas comuns: `EVENTS_PER_SECOND`
 alto demais para a capacidade do Spark, ou trigger muito curto. Aumente paralelismo
-(`SPARK_WORKER_CORES`), aumente `maxOffsetsPerTrigger` **com** mais memória, ou
+(mais CPUs para o Docker; o `local[*]` usa todas), aumente `maxOffsetsPerTrigger` **com** mais memória, ou
 reduza a taxa de produção (`EVENTS_PER_SECOND`).
 </details>
 

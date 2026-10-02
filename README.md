@@ -68,24 +68,22 @@ de negócio atualizadas a cada 5 segundos. Observabilidade completa com
 
 ---
 
-## 🚀 Setup em 5 comandos
+## 🚀 Como rodar
+
+Só precisa de Docker (com ≥ 8 GB de RAM) e Git; funciona igual no Windows,
+macOS e Linux.
 
 ```bash
-# 1. Clonar
 git clone <seu-fork> && cd streaming-pipeline-real-time
-
-# 2. Subir infra, criar tópicos, registrar schemas, preparar dados
-make setup
-
-# 3. Baixar o dataset Olist (ver seção abaixo) — ou usar amostra sintética:
-python scripts/seed_data.py --sample        # dispensa o Kaggle
-
-# 4. Subir produtores + pipeline + dashboard
-make up-all
-
-# 5. Abrir o dashboard ao vivo
-make dashboard            # http://localhost:8501
+docker compose up -d --build
 ```
+
+O serviço `init` roda uma vez antes de produtores e pipeline: cria os tópicos,
+registra os schemas Avro e prepara os dados. Se `data/raw/` tiver os CSVs reais
+da Olist (ver seção abaixo), eles são usados; senão, gera uma amostra sintética.
+O dashboard fica em http://localhost:8501 assim que o Gold tiver dados.
+
+Com `make` disponível, `make up-all` faz o mesmo e `make help` lista os atalhos.
 
 > Dica para gravação de vídeo (LinkedIn): o produtor já roda com `PRODUCER_LOOP=true`,
 > reiniciando o CSV ao chegar no fim — os contadores sobem continuamente.
@@ -108,7 +106,7 @@ make dashboard            # http://localhost:8501
 Requer a [Kaggle API](https://github.com/Kaggle/kaggle-api) configurada (`~/.kaggle/kaggle.json`):
 
 ```bash
-pip install kaggle
+pip install kaggle   # no host, só para o download
 kaggle datasets download -d olistbr/brazilian-ecommerce -p data/raw --unzip
 ```
 
@@ -117,8 +115,10 @@ Após o download, `data/raw/` deve conter, entre outros:
 `olist_customers_dataset.csv`, `olist_order_payments_dataset.csv`,
 `olist_products_dataset.csv`.
 
-Depois rode `make seed` para gerar a dimensão `data/reference/customers` (parquet)
-usada no join estático do enrichment.
+Com os CSVs em `data/raw/` antes do `docker compose up`, o `init` os usa e gera a
+dimensão `data/reference/customers` (parquet) do join estático do enrichment.
+Para trocar a amostra sintética pelos dados reais depois, rode
+`docker compose down -v`, apague `data/` (exceto os CSVs novos) e suba de novo.
 
 ---
 

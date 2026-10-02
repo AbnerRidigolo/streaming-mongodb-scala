@@ -1,0 +1,7 @@
+# Only scripts/Dockerfile builds from the repo root; keep its context small.
+.git
+data
+**/__pycache__
+.mypy_cache
+.pytest_cache
+spark-warehouse

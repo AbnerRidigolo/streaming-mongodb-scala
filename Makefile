@@ -8,7 +8,7 @@ SHELL := /bin/bash
 PYTHON ?= python
 COMPOSE ?= docker compose
 
-INFRA_SERVICES := zookeeper kafka schema-registry kafka-ui spark-master spark-worker prometheus grafana
+INFRA_SERVICES := zookeeper kafka schema-registry kafka-ui prometheus grafana
 
 .DEFAULT_GOAL := help
 .PHONY: help setup up down up-all logs-kafka logs-spark logs-producer \

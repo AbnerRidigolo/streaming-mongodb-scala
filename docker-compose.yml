@@ -2,7 +2,8 @@ name: streaming-pipeline-olist
 
 # ---------------------------------------------------------------------------
 # Real-time Streaming Pipeline — Olist
-# Full local environment: Kafka + Schema Registry + Spark + Delta + monitoring
+# Full local environment: Kafka + Schema Registry + Spark (local mode) + Delta
+# + monitoring
 # ---------------------------------------------------------------------------
 
 x-common-env: &common-env
@@ -123,63 +124,6 @@ services:
       - streaming-network
 
   # -------------------------------------------------------------------------
-  # Spark master
-  # -------------------------------------------------------------------------
-  spark-master:
-    image: bitnami/spark:3.4
-    container_name: spark-master
-    restart: unless-stopped
-    environment:
-      SPARK_MODE: master
-      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
-      SPARK_RPC_ENCRYPTION_ENABLED: "no"
-      SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
-      SPARK_SSL_ENABLED: "no"
-    ports:
-      - "7077:7077"
-      - "8090:8080"
-    volumes:
-      - spark-checkpoints:/tmp/streaming-checkpoints
-      - delta-data:/opt/bitnami/spark/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-    networks:
-      - streaming-network
-
-  # -------------------------------------------------------------------------
-  # Spark worker
-  # -------------------------------------------------------------------------
-  spark-worker:
-    image: bitnami/spark:3.4
-    container_name: spark-worker
-    restart: unless-stopped
-    depends_on:
-      spark-master:
-        condition: service_healthy
-    environment:
-      SPARK_MODE: worker
-      SPARK_MASTER_URL: spark://spark-master:7077
-      SPARK_WORKER_MEMORY: 2G
-      SPARK_WORKER_CORES: 2
-      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
-      SPARK_RPC_ENCRYPTION_ENABLED: "no"
-      SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
-      SPARK_SSL_ENABLED: "no"
-    volumes:
-      - spark-checkpoints:/tmp/streaming-checkpoints
-      - delta-data:/opt/bitnami/spark/data
-    healthcheck:
-      test: ["CMD", "bash", "-c", "curl -f http://localhost:8081 || exit 0"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-    networks:
-      - streaming-network
-
-  # -------------------------------------------------------------------------
   # Orders producer
   # -------------------------------------------------------------------------
   orders-producer:
@@ -207,6 +151,8 @@ services:
 
   # -------------------------------------------------------------------------
   # Spark pipeline (ingestion + enrichment + aggregation)
+  # Runs Spark in local[*] mode inside this container: a single-node demo does
+  # not need a standalone cluster, and the driver and executors share ./data.
   # -------------------------------------------------------------------------
   spark-pipeline:
     build:
@@ -216,19 +162,18 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
-      spark-master:
-        condition: service_healthy
     command: python pipeline_runner.py
+    ports:
+      - "4040:4040"   # Spark UI of the driver
     environment:
       <<: *common-env
-      SPARK_MASTER: spark://spark-master:7077
       CHECKPOINT_LOCATION: /tmp/streaming-checkpoints
       SPARK_LOG_LEVEL: WARN
       BRONZE_PATH: /data/bronze/orders
       SILVER_PATH: /data/silver/orders_enriched
       GOLD_PATH: /data/gold/orders_agg
       CUSTOMERS_PATH: /data/reference/customers
-      SPARK_ENV: cluster
+      SPARK_ENV: local
     volumes:
       - spark-checkpoints:/tmp/streaming-checkpoints
       - ./data:/data
@@ -243,9 +188,6 @@ services:
       context: ./dashboard
     container_name: dashboard
     restart: unless-stopped
-    depends_on:
-      spark-master:
-        condition: service_healthy
     ports:
       - "8501:8501"
     environment:
@@ -319,6 +261,5 @@ networks:
 volumes:
   kafka-data:
   spark-checkpoints:
-  delta-data:
   grafana-data:
   prometheus-data:

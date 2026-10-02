@@ -101,7 +101,7 @@ def get_test_session(app_name: str = "olist-tests") -> SparkSession:
         app_name: Spark application name.
 
     Returns:
-        A local ``SparkSession`` configured with Delta extensions only.
+        A local ``SparkSession`` configured with Delta and spark-avro.
     """
     from delta import configure_spark_with_delta_pip
 
@@ -120,6 +120,9 @@ def get_test_session(app_name: str = "olist-tests") -> SparkSession:
         .config("spark.sql.session.timeZone", "UTC")
         .config("spark.ui.enabled", "false")
     )
-    spark = configure_spark_with_delta_pip(builder).getOrCreate()
+    # spark-avro lets tests exercise the from_avro decoding path.
+    spark = configure_spark_with_delta_pip(
+        builder, extra_packages=["org.apache.spark:spark-avro_2.12:3.4.1"]
+    ).getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
     return spark

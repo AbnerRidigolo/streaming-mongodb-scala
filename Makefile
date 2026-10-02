@@ -22,26 +22,21 @@ help: ## Show this help
 # -----------------------------------------------------------------------------
 # Bootstrapping
 # -----------------------------------------------------------------------------
-setup: ## Install deps, bring up infra, create topics, register schemas, seed data
-	$(PYTHON) -m pip install -r requirements.txt
-	$(MAKE) up
-	@echo "Waiting for Kafka + Schema Registry to become healthy..."
-	@sleep 25
-	$(MAKE) topics
-	$(MAKE) schemas
-	$(MAKE) seed
+setup: ## Bring up infra and run init (topics, schemas, data) — Docker only
+	$(COMPOSE) build init
+	$(COMPOSE) run --rm init
 	@echo "Setup complete. Run 'make up-all' to start producers + pipeline + dashboard."
 
 # -----------------------------------------------------------------------------
 # Docker lifecycle
 # -----------------------------------------------------------------------------
-up: ## Start core infra only (zookeeper, kafka, schema-registry, spark, monitoring)
+up: ## Start core infra only (zookeeper, kafka, schema-registry, monitoring)
 	$(COMPOSE) up -d $(INFRA_SERVICES)
 
 down: ## Stop all containers
 	$(COMPOSE) down
 
-up-all: ## Start everything (infra + producers + pipeline + dashboard)
+up-all: ## Start everything (infra + init + producers + pipeline + dashboard)
 	$(COMPOSE) up -d --build
 
 # -----------------------------------------------------------------------------
@@ -59,22 +54,23 @@ logs-producer: ## Tail orders-producer logs
 # -----------------------------------------------------------------------------
 # Operational scripts
 # -----------------------------------------------------------------------------
-topics: ## Create Kafka topics with correct configs
-	$(PYTHON) scripts/create_topics.py
+topics: ## Create Kafka topics with correct configs (in the init container)
+	$(COMPOSE) run --rm init python scripts/create_topics.py
 
-schemas: ## Register Avro schemas in Schema Registry
-	$(PYTHON) scripts/register_schemas.py
+schemas: ## Register Avro schemas in Schema Registry (in the init container)
+	$(COMPOSE) run --rm init python scripts/register_schemas.py
 
-seed: ## Prepare Olist CSVs for replay
-	$(PYTHON) scripts/seed_data.py
+seed: ## Prepare Olist CSVs for replay (in the init container)
+	$(COMPOSE) run --rm init python scripts/seed_data.py
 
+# The targets below run on the host and need `pip install -r requirements.txt`.
 produce: ## Run orders producer interactively
 	$(PYTHON) producers/orders_producer.py
 
 pipeline: ## Run the Spark pipeline locally
 	$(PYTHON) spark_jobs/pipeline_runner.py
 
-dashboard: ## Launch the Streamlit dashboard
+dashboard: ## Launch the Streamlit dashboard on the host
 	streamlit run dashboard/app.py
 
 check: ## Health-check all pipeline components

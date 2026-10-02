@@ -129,6 +129,30 @@ services:
       - streaming-network
 
   # -------------------------------------------------------------------------
+  # One-shot init: topics, Avro schemas, Olist data (real CSVs or a sample).
+  # Everything downstream waits for it to exit successfully.
+  # -------------------------------------------------------------------------
+  init:
+    build:
+      context: .
+      dockerfile: scripts/Dockerfile
+    container_name: init
+    restart: "no"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      DATA_DIR: /data/raw
+      CUSTOMERS_PATH: /data/reference/customers
+    volumes:
+      - ./data:/data
+    networks:
+      - streaming-network
+
+  # -------------------------------------------------------------------------
   # Orders producer
   # -------------------------------------------------------------------------
   orders-producer:
@@ -137,10 +161,8 @@ services:
     container_name: orders-producer
     restart: unless-stopped
     depends_on:
-      kafka:
-        condition: service_healthy
-      schema-registry:
-        condition: service_healthy
+      init:
+        condition: service_completed_successfully
     command: python orders_producer.py
     environment:
       <<: *common-env
@@ -166,10 +188,8 @@ services:
     container_name: payments-producer
     restart: unless-stopped
     depends_on:
-      kafka:
-        condition: service_healthy
-      schema-registry:
-        condition: service_healthy
+      init:
+        condition: service_completed_successfully
     command: python payments_producer.py
     environment:
       <<: *common-env
@@ -191,10 +211,8 @@ services:
     container_name: delivery-producer
     restart: unless-stopped
     depends_on:
-      kafka:
-        condition: service_healthy
-      schema-registry:
-        condition: service_healthy
+      init:
+        condition: service_completed_successfully
     command: python delivery_producer.py
     environment:
       <<: *common-env
@@ -218,8 +236,8 @@ services:
     container_name: spark-pipeline
     restart: unless-stopped
     depends_on:
-      kafka:
-        condition: service_healthy
+      init:
+        condition: service_completed_successfully
     command: python pipeline_runner.py
     ports:
       - "4040:4040"   # Spark UI of the driver

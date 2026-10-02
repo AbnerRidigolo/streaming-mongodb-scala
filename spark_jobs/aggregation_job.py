@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 
 import structlog
-from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import Column, DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.streaming import StreamingQuery
 from pyspark.sql.window import Window
@@ -29,6 +29,16 @@ from utils.delta_utils import upsert_delta
 log = structlog.get_logger("aggregation_job")
 
 WATERMARK_DELAY = "10 minutes"
+
+
+def _created() -> Column:
+    """Return the predicate selecting ``ORDER_CREATED`` events.
+
+    Every lifecycle event (CREATED, APPROVED, SHIPPED, ...) repeats the order's
+    ``payment_value``; only ``ORDER_CREATED`` marks a new order, so order
+    counts and revenue are taken from those events alone.
+    """
+    return F.col("event_type") == "ORDER_CREATED"
 
 
 def aggregate_state_category(df: DataFrame) -> DataFrame:
@@ -52,11 +62,20 @@ def aggregate_state_category(df: DataFrame) -> DataFrame:
             F.col("product_category"),
         )
         .agg(
-            F.count("*").alias("total_orders"),
-            F.round(F.sum("payment_value"), 2).alias("total_revenue"),
-            F.round(F.avg("payment_value"), 2).alias("avg_order_value"),
-            F.approx_count_distinct("customer_id").alias("unique_customers"),
-            F.sum(F.when(F.col("is_high_value"), 1).otherwise(0)).alias(
+            F.sum(F.when(_created(), 1).otherwise(0)).alias("total_orders"),
+            F.round(
+                F.coalesce(
+                    F.sum(F.when(_created(), F.col("payment_value"))), F.lit(0.0)
+                ),
+                2,
+            ).alias("total_revenue"),
+            F.round(F.avg(F.when(_created(), F.col("payment_value"))), 2).alias(
+                "avg_order_value"
+            ),
+            F.approx_count_distinct(F.when(_created(), F.col("customer_id"))).alias(
+                "unique_customers"
+            ),
+            F.sum(F.when(_created() & F.col("is_high_value"), 1).otherwise(0)).alias(
                 "high_value_orders"
             ),
             F.sum(
@@ -99,8 +118,13 @@ def aggregate_global_base(df: DataFrame) -> DataFrame:
             F.col("product_category"),
         )
         .agg(
-            F.count("*").alias("order_count"),
-            F.round(F.sum("payment_value"), 2).alias("revenue"),
+            F.sum(F.when(_created(), 1).otherwise(0)).alias("order_count"),
+            F.round(
+                F.coalesce(
+                    F.sum(F.when(_created(), F.col("payment_value"))), F.lit(0.0)
+                ),
+                2,
+            ).alias("revenue"),
         )
         .select(
             F.col("window.start").alias("window_start"),

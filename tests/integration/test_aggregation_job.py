@@ -8,7 +8,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
-from aggregation_job import aggregate_state_category
+from aggregation_job import aggregate_global_base, aggregate_state_category
 from utils.delta_utils import upsert_delta
 
 _SILVER_SCHEMA = T.StructType(
@@ -84,3 +84,41 @@ def test_window_slide_produces_overlapping_results(spark: SparkSession) -> None:
 
     windows = {r["window_start"] for r in agg.select("window_start").collect()}
     assert len(windows) == 2
+
+
+def test_lifecycle_events_count_as_one_order(spark: SparkSession) -> None:
+    """An order's lifecycle events count once in orders and revenue.
+
+    Each order emits CREATED, APPROVED, SHIPPED and DELIVERED (or CANCELED),
+    all carrying the same payment_value; only ORDER_CREATED is an order.
+    """
+    ts = datetime(2024, 1, 1, 12, 0, 10)
+    lifecycle = ["ORDER_CREATED", "ORDER_APPROVED", "ORDER_SHIPPED", "ORDER_DELIVERED"]
+    rows = [("c1", "SP", "esporte", 600.0, True, et, ts) for et in lifecycle]
+    rows += [
+        ("c2", "SP", "esporte", 100.0, False, et, ts)
+        for et in ("ORDER_CREATED", "ORDER_APPROVED", "ORDER_CANCELED")
+    ]
+    agg = aggregate_state_category(_silver(spark, rows))
+
+    row = agg.orderBy("window_start").collect()[0]
+    assert row["total_orders"] == 2
+    assert row["total_revenue"] == 700.0
+    assert row["avg_order_value"] == 350.0
+    assert row["unique_customers"] == 2
+    assert row["high_value_orders"] == 1
+    assert row["cancellation_count"] == 1
+
+
+def test_global_base_counts_created_orders_only(spark: SparkSession) -> None:
+    """The global rate base counts orders and revenue from ORDER_CREATED."""
+    ts = datetime(2024, 1, 1, 12, 0, 10)
+    rows = [
+        ("c1", "RJ", "beleza", 80.0, False, et, ts)
+        for et in ("ORDER_CREATED", "ORDER_APPROVED", "ORDER_SHIPPED")
+    ]
+    base = aggregate_global_base(_silver(spark, rows))
+
+    row = base.collect()[0]
+    assert row["order_count"] == 1
+    assert row["revenue"] == 80.0

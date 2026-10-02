@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 # Spark needs a JVM; procps provides `ps` which the Spark launcher relies on.
+# Bookworm is pinned because its default-jre is OpenJDK 17: Spark 3.4 does not
+# run on Java 21, the default in newer Debian releases.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends default-jre-headless procps \
     && rm -rf /var/lib/apt/lists/*

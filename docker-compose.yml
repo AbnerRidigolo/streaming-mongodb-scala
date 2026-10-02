@@ -150,6 +150,59 @@ services:
       - streaming-network
 
   # -------------------------------------------------------------------------
+  # Payments producer
+  # Rates roughly track the orders producer: ~4.5 order events per order at
+  # 10 ev/s ≈ 2.2 orders/s; one payment event per order; 4 delivery events
+  # per order.
+  # -------------------------------------------------------------------------
+  payments-producer:
+    build:
+      context: ./producers
+    container_name: payments-producer
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+    command: python payments_producer.py
+    environment:
+      <<: *common-env
+      EVENTS_PER_SECOND: "3"
+      PRODUCER_ID: payments-producer-001
+      PRODUCER_LOOP: "true"
+      DATA_DIR: /data/raw
+    volumes:
+      - ./data:/data
+    networks:
+      - streaming-network
+
+  # -------------------------------------------------------------------------
+  # Delivery producer
+  # -------------------------------------------------------------------------
+  delivery-producer:
+    build:
+      context: ./producers
+    container_name: delivery-producer
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+    command: python delivery_producer.py
+    environment:
+      <<: *common-env
+      EVENTS_PER_SECOND: "10"
+      PRODUCER_ID: delivery-producer-001
+      PRODUCER_LOOP: "true"
+      DATA_DIR: /data/raw
+    volumes:
+      - ./data:/data
+    networks:
+      - streaming-network
+
+  # -------------------------------------------------------------------------
   # Spark pipeline (ingestion + enrichment + aggregation)
   # Runs Spark in local[*] mode inside this container: a single-node demo does
   # not need a standalone cluster, and the driver and executors share ./data.

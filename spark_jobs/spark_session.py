@@ -3,7 +3,7 @@
 Centralizes the Spark configuration shared by every streaming job:
 
 * Delta Lake SQL extensions + catalog,
-* Kafka, Avro and Delta JAR packages (incl. ABRiS for Schema Registry),
+* Kafka, Avro and Delta JAR packages,
 * Adaptive Query Execution + auto-compaction tuning,
 * a sane shuffle-partition count for a single-node local environment,
 * a configurable log level (defaults to ``WARN`` to silence INFO noise).
@@ -20,14 +20,13 @@ from pyspark.sql import SparkSession
 log = structlog.get_logger("spark_session")
 
 # JAR packages required by the streaming jobs. ``spark-avro`` provides the
-# ``from_avro`` function used to decode Confluent-Avro payloads; ABRiS is kept
-# for full Schema-Registry integration as required by the project contract.
+# ``from_avro`` function used to decode Confluent-Avro payloads (the 5-byte
+# Confluent header is stripped in ingestion_job, with a fixed reader schema).
 _DEFAULT_PACKAGES: Final[str] = ",".join(
     [
         "org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.1",
         "org.apache.spark:spark-avro_2.12:3.4.1",
         "io.delta:delta-core_2.12:2.4.0",
-        "za.co.absa:abris_2.12:6.4.0",
     ]
 )
 

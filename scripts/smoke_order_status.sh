@@ -36,7 +36,7 @@ consume() {
     --property schema.registry.url=http://schema-registry:8081 \
     --property print.key=true \
     --key-deserializer org.apache.kafka.common.serialization.StringDeserializer \
-    2>/dev/null
+    2>/dev/null | grep $'\t' || true
 }
 
 docker compose up -d --build "${SERVICES[@]}"

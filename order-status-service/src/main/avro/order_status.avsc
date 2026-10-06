@@ -1,0 +1,205 @@
+{
+  "type": "record",
+  "name": "OrderStatus",
+  "namespace": "br.com.olist.orderstatus.avro",
+  "doc": "Current state of an order, published to the compacted order-status topic.",
+  "fields": [
+    {
+      "name": "order_id",
+      "type": "string"
+    },
+    {
+      "name": "status",
+      "type": {
+        "type": "enum",
+        "name": "LifecycleStatus",
+        "namespace": "br.com.olist.orderstatus.avro",
+        "symbols": [
+          "CREATED",
+          "PAID",
+          "SHIPPED",
+          "DELIVERED",
+          "CANCELED",
+          "UNKNOWN"
+        ],
+        "default": "UNKNOWN"
+      }
+    },
+    {
+      "name": "customer_id",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null,
+      "doc": "From order events."
+    },
+    {
+      "name": "customer_state",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null,
+      "doc": "Two-letter state; from order or delivery events."
+    },
+    {
+      "name": "seller_id",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null,
+      "doc": "First seller on the order."
+    },
+    {
+      "name": "product_category",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null,
+      "doc": "Category of the first item."
+    },
+    {
+      "name": "order_value",
+      "type": [
+        "null",
+        "double"
+      ],
+      "default": null,
+      "doc": "Items + freight, as carried by the order events."
+    },
+    {
+      "name": "paid_amount",
+      "type": "double",
+      "default": 0.0,
+      "doc": "Sum of distinct payment events."
+    },
+    {
+      "name": "payment_count",
+      "type": "int",
+      "default": 0
+    },
+    {
+      "name": "payment_types",
+      "type": {
+        "type": "array",
+        "items": "string"
+      },
+      "default": [],
+      "doc": "Distinct payment types seen."
+    },
+    {
+      "name": "created_at",
+      "type": [
+        "null",
+        {
+          "type": "long",
+          "logicalType": "timestamp-millis"
+        }
+      ],
+      "default": null,
+      "doc": "Earliest ORDER_CREATED."
+    },
+    {
+      "name": "approved_at",
+      "type": [
+        "null",
+        {
+          "type": "long",
+          "logicalType": "timestamp-millis"
+        }
+      ],
+      "default": null,
+      "doc": "Earliest ORDER_APPROVED."
+    },
+    {
+      "name": "paid_at",
+      "type": [
+        "null",
+        {
+          "type": "long",
+          "logicalType": "timestamp-millis"
+        }
+      ],
+      "default": null,
+      "doc": "Earliest payment event."
+    },
+    {
+      "name": "shipped_at",
+      "type": [
+        "null",
+        {
+          "type": "long",
+          "logicalType": "timestamp-millis"
+        }
+      ],
+      "default": null,
+      "doc": "Earliest ORDER_SHIPPED or delivery PICKED_UP."
+    },
+    {
+      "name": "delivered_at",
+      "type": [
+        "null",
+        {
+          "type": "long",
+          "logicalType": "timestamp-millis"
+        }
+      ],
+      "default": null,
+      "doc": "Earliest ORDER_DELIVERED or delivery DELIVERED."
+    },
+    {
+      "name": "canceled_at",
+      "type": [
+        "null",
+        {
+          "type": "long",
+          "logicalType": "timestamp-millis"
+        }
+      ],
+      "default": null,
+      "doc": "Earliest ORDER_CANCELED."
+    },
+    {
+      "name": "last_delivery_status",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null,
+      "doc": "Latest carrier status by event time."
+    },
+    {
+      "name": "last_delivery_status_at",
+      "type": [
+        "null",
+        {
+          "type": "long",
+          "logicalType": "timestamp-millis"
+        }
+      ],
+      "default": null,
+      "doc": "Event time of last_delivery_status."
+    },
+    {
+      "name": "event_count",
+      "type": "long",
+      "default": 0,
+      "doc": "Input events folded into this lifecycle."
+    },
+    {
+      "name": "updated_at",
+      "type": [
+        "null",
+        {
+          "type": "long",
+          "logicalType": "timestamp-millis"
+        }
+      ],
+      "default": null,
+      "doc": "Latest event time seen."
+    }
+  ]
+}

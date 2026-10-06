@@ -226,6 +226,37 @@ services:
       - streaming-network
 
   # -------------------------------------------------------------------------
+  # order-status-service (Java, Kafka Streams): current state per order and
+  # business-rule alerts. GET http://localhost:8088/orders/{order_id}
+  # -------------------------------------------------------------------------
+  order-status-service:
+    build:
+      context: .
+      dockerfile: order-status-service/Dockerfile
+    container_name: order-status-service
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    ports:
+      - "8088:8080"
+    environment:
+      <<: *common-env
+      ADVERTISED_HOST: order-status-service
+      HTTP_PORT: "8080"
+      PAYMENT_TIMEOUT_MINUTES: "15"
+      JAVA_OPTS: "-Xmx512m"
+    volumes:
+      - order-status-state:/var/lib/kafka-streams
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8080 && printf 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q ' 200 ' <&3"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks:
+      - streaming-network
+
+  # -------------------------------------------------------------------------
   # Spark pipeline (ingestion + enrichment + aggregation)
   # Runs Spark in local[*] mode inside this container: a single-node demo does
   # not need a standalone cluster, and the driver and executors share ./data.
@@ -336,6 +367,7 @@ networks:
 
 volumes:
   zookeeper-data:
+  order-status-state:
   zookeeper-log:
   kafka-data:
   spark-checkpoints:

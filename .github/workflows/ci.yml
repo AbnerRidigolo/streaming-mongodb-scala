@@ -1,9 +1,9 @@
 name: CI
 
+# Every push runs CI, so feature branches are checked before a PR exists;
+# a PR's checks are the runs of its head commit.
 on:
   push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 concurrency:
@@ -51,6 +51,24 @@ jobs:
       - run: >
           pytest tests/ -v
           --cov=producers --cov=spark_jobs --cov-report=term
+
+  java-order-status-service:
+    name: Java tests (order-status-service, TopologyTestDriver)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: order-status-service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+          cache-dependency-path: |
+            order-status-service/*.gradle.kts
+            order-status-service/gradle/wrapper/gradle-wrapper.properties
+      - run: ./gradlew --no-daemon test
 
   docker-build:
     name: Docker images build

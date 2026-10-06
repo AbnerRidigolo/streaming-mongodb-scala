@@ -45,6 +45,20 @@ TOPIC_SPECS: list[tuple[str, int, int, dict[str, str]]] = [
         1,
         {"cleanup.policy": "compact"},
     ),
+    # order-status-service outputs: current state per order_id (a table, so
+    # compacted) and rule-violation alerts (an event log, 7 days).
+    (
+        os.environ.get("TOPIC_ORDER_STATUS", "order-status"),
+        3,
+        1,
+        {"cleanup.policy": "compact", "min.compaction.lag.ms": "60000"},
+    ),
+    (
+        os.environ.get("TOPIC_ORDER_ALERTS", "order-alerts"),
+        3,
+        1,
+        {"retention.ms": "604800000"},
+    ),
 ]
 
 

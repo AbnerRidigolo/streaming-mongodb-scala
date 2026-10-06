@@ -94,6 +94,8 @@
           "legendFormat": "produced"
         }
       ]
-    }
+    },
+    {"id": 5, "title": "order-status-service \u2014 input events/s by source", "type": "timeseries", "datasource": {"type": "prometheus", "uid": "prometheus"}, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}, "fieldConfig": {"defaults": {"unit": "ops", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": []}, "options": {"legend": {"displayMode": "list", "placement": "bottom"}}, "targets": [{"refId": "A", "expr": "sum by (source) (rate(order_status_input_events_total[1m]))", "legendFormat": "{{source}}"}]},
+    {"id": 6, "title": "order-status-service \u2014 alerts by type (last 5m)", "type": "timeseries", "datasource": {"type": "prometheus", "uid": "prometheus"}, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16}, "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "bars", "fillOpacity": 60}}, "overrides": []}, "options": {"legend": {"displayMode": "list", "placement": "bottom"}}, "targets": [{"refId": "A", "expr": "sum by (type) (increase(order_status_alerts_total[5m]))", "legendFormat": "{{type}}"}]}
   ]
 }

@@ -98,6 +98,7 @@ Com `make` disponível, `make up-all` faz o mesmo e `make help` lista os atalhos
 | Grafana | http://localhost:3000 (`admin` / `admin`) |
 | Prometheus | http://localhost:9090 |
 | Schema Registry | http://localhost:8081 |
+| order-status-service (Kafka Streams) | http://localhost:8088/orders/{order_id} |
 
 ---
 
@@ -159,6 +160,104 @@ job que falhou (até 3 tentativas) e faz shutdown gracioso em SIGINT/SIGTERM.
 
 ---
 
+## ☕ `order-status-service` — Kafka Streams (Java)
+
+**Papel no pipeline:** o Spark responde "quanto vendemos por janela"; este serviço
+responde "em que pé está o pedido X agora?" e "que pedidos violam uma regra?". Ele
+junta os três tópicos de entrada num estado atual por pedido, publica esse estado
+em `order-status` (compactado) e gera alertas em `order-alerts`. É a fonte do
+estado de pedido que a camada de serviço (MongoDB, fase 2) vai expor.
+
+```
+orders-raw ──────┐                                          ┌─► order-status (compactado)
+payments-raw ────┼─► repartition ─► cogroup ─► KTable ──────┤
+delivery-events ─┘   (3 partições)            (order_id)    └─► regras ─► order-alerts
+                                                 ▲
+                              GET /orders/{id} ──┘  (interactive query, store order-state)
+```
+
+**Ciclo de vida** (`status`): `CREATED → PAID → SHIPPED → DELIVERED`, e
+`CANCELED` como estado terminal.
+
+| Marco | Evento que o define |
+|---|---|
+| `created_at` | `ORDER_CREATED` |
+| `paid_at` | primeiro `PaymentEvent` do pedido (`ORDER_APPROVED` fica em `approved_at`) |
+| `shipped_at` | `ORDER_SHIPPED` ou `PICKED_UP` da transportadora, o que vier antes |
+| `delivered_at` | `ORDER_DELIVERED` ou `DELIVERED` da transportadora |
+| `canceled_at` | `ORDER_CANCELED` |
+
+**Regras de alerta** (definidas a partir dos campos que os eventos têm de fato):
+
+| Alerta | Quando |
+|---|---|
+| `PAYMENT_TIMEOUT` | pedido criado, sem nenhum `PaymentEvent` e não cancelado `PAYMENT_TIMEOUT_MINUTES` (15) depois, em *stream time* |
+| `DELIVERED_AFTER_CANCELLATION` | a transportadora reporta `DELIVERED` para um pedido cancelado, em qualquer ordem de chegada |
+
+Cada alerta sai uma vez por pedido, com `alert_id = <tipo>:<order_id>`, então um
+consumidor pode fazer upsert idempotente.
+
+**Decisões técnicas**
+
+| Decisão | Por quê |
+|---|---|
+| `cogroup` → uma `KTable` por `order_id` | Três fontes com tipos diferentes agregadas num único estado, sem join em cascata nem tipo intermediário. |
+| Repartição das três entradas | `delivery-events` tem 2 partições e as outras 3; e os produtores Python usam o particionador do librdkafka (CRC32), não o murmur2 do Java. Repartir pelo particionador do Streams co-particiona as três e faz `queryMetadataForKey` achar a partição certa. Alternativa (não adotada, mudaria os produtores): `partitioner=murmur2_random` no librdkafka. |
+| Agregação comutativa e idempotente | Cada marco guarda o menor timestamp; o último status da transportadora é o de maior timestamp; pagamentos são deduplicados por conteúdo (`tipo\|valor\|parcelas`), porque o loop de replay reenvia o mesmo pagamento com outro `event_id`. Resultado: eventos fora de ordem ou repetidos convergem para o mesmo estado (testado com as 120 ordens possíveis de 5 eventos). |
+| Punctuator em **stream time** | O prazo de pagamento é medido pelo timestamp dos registros, não pelo relógio: reprocessar um backlog não dispara alertas falsos só porque o pagamento ainda está mais atrás no tópico. Pedidos sem pagamento ficam numa store própria (`awaiting-payment`), então o punctuator não varre a KTable inteira. |
+| `processing.guarantee=exactly_once_v2` | Offsets consumidos, changelogs das stores e escritas em `order-status`/`order-alerts` na mesma transação. |
+| Erro de desserialização: log e segue | Um registro corrompido não derruba o serviço; aparece na métrica `dropped-records` do Kafka Streams. |
+| Serdes Avro da Confluent | Mesmo Schema Registry dos produtores; as classes de entrada são geradas dos mesmos `.avsc` de `producers/schemas` (sem cópia). |
+
+**Como usar** (sobe junto com `docker compose up -d --build`):
+
+```bash
+curl http://localhost:8088/orders/order_000000   # estado atual (JSON)
+curl http://localhost:8088/metrics               # Prometheus
+curl http://localhost:8088/health
+```
+
+Exemplo real (saída do teste de fumaça do CI):
+
+```json
+{
+  "order_id": "order_000000", "status": "DELIVERED", "customer_state": "PR",
+  "order_value": 255.92, "paid_amount": 271.51, "payment_count": 1,
+  "payment_types": ["DEBIT_CARD"],
+  "created_at": "2026-10-06T17:20:26.502Z", "paid_at": "2026-10-06T17:21:09.491Z",
+  "shipped_at": "2026-10-06T17:20:26.455Z", "delivered_at": "2026-10-06T17:20:26.786Z",
+  "last_delivery_status": "DELIVERED", "event_count": 9
+}
+```
+
+Com várias instâncias, `GET /orders/{id}` numa instância que não tem a partição
+do pedido responde `307` apontando para a dona (via `application.server`).
+
+**Testes:** `order-status-service/src/test` usa `TopologyTestDriver` com Schema
+Registry em memória (`mock://`), sem broker: ciclo de vida, todas as permutações
+de chegada, deduplicação, replay, as duas regras (casos positivos e negativos) e a
+consulta à store. `scripts/smoke_order_status.sh` sobe a stack real e consulta o
+serviço; roda no CI. Build e testes: `cd order-status-service && ./gradlew test`
+(ou só pelo CI/Docker; não precisa de Java instalado para rodar o pipeline).
+
+**Limitações conhecidas**
+
+- Os três produtores percorrem os CSVs em ritmos independentes, então os tempos
+  entre fontes não são coerentes: `PICKED_UP` pode vir antes de `ORDER_CREATED`, e o
+  produtor de pagamentos soma até 5 min "no futuro" ao `event_timestamp`
+  (`paid_at` posterior à entrega). O serviço reporta o que os eventos dizem.
+- Na amostra sintética o pagamento sai do mesmo índice do pedido, então quase não
+  há `PAYMENT_TIMEOUT`. Com o dataset da Kaggle, os pagamentos chegam em outra
+  ordem e o alerta dispara muito (o que é o comportamento esperado da regra).
+- Na amostra sintética `paid_amount` difere de `order_value` (o gerador sorteia o
+  frete duas vezes); por isso não há regra de divergência de valor.
+- O loop de replay reusa os `order_id`: o serviço trata a segunda passada como o
+  mesmo pedido (marcos e valores não mudam; só `event_count`/`updated_at`).
+- Deduplicar pagamento por conteúdo junta dois pagamentos idênticos do mesmo
+  pedido (mesmo tipo, valor e parcelas); o evento não traz o número sequencial.
+
+---
+
 ## 📊 Monitoramento
 
 Grafana provisiona automaticamente o datasource Prometheus e o dashboard
@@ -169,6 +268,8 @@ Grafana provisiona automaticamente o datasource Prometheus e o dashboard
 | Throughput | `rate(kafka_messages_produced_total{status="success"}[1m])` |
 | Error rate | `rate(kafka_messages_produced_total{status="error"}[1m])` |
 | Spark ingestion | `metrics_olist_driver_spark_streaming_ingestion_bronze_{inputRate,processingRate}_total_Value` |
+| order-status-service: eventos/s | `sum by (source) (rate(order_status_input_events_total[1m]))` |
+| order-status-service: alertas | `sum by (type) (increase(order_status_alerts_total[5m]))` |
 | Total produzido | `sum(kafka_messages_produced_total{status="success"})` |
 
 ```
@@ -273,7 +374,8 @@ exceto o teste marcado `RUN_KAFKA_IT=1`, que exige um broker rodando.
 producers/      # Avro producers (base + orders/payments/delivery) e schemas .avsc
 spark_jobs/     # ingestion, enrichment, aggregation, runner, utils (kafka/delta)
 dashboard/      # Streamlit app + queries Delta
-scripts/        # create_topics, register_schemas, seed_data, check_pipeline
+scripts/        # create_topics, register_schemas, seed_data, check_pipeline, smoke_order_status.sh
+order-status-service/  # Kafka Streams (Java 17, Gradle): estado por pedido + alertas
 monitoring/     # Prometheus + provisioning e dashboard Grafana
 tests/          # unit, integration, e2e
 ```

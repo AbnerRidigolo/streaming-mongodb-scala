@@ -1,6 +1,7 @@
 """Register the Avro schemas with the Confluent Schema Registry (idempotent).
 
-Registers ``order_event.avsc`` and ``payment_event.avsc`` under the
+Registers ``order_event.avsc``, ``payment_event.avsc`` and
+``delivery_event.avsc`` under the
 topic-name-strategy subjects (``<topic>-value``). If an identical schema is
 already registered, Schema Registry returns the existing id, so re-running is
 safe. Prints the subject and schema id for each schema.
@@ -27,6 +28,10 @@ SCHEMA_SPECS: list[tuple[str, str]] = [
     (
         "payment_event.avsc",
         f"{os.environ.get('TOPIC_PAYMENTS_RAW', 'payments-raw')}-value",
+    ),
+    (
+        "delivery_event.avsc",
+        f"{os.environ.get('TOPIC_DELIVERY', 'delivery-events')}-value",
     ),
 ]
 

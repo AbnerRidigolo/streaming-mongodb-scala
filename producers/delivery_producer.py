@@ -6,14 +6,13 @@ For every order it emits a delivery progression:
 
 Each event carries randomized GPS coordinates jittered around the centroid of
 the customer's Brazilian state, so a map visualization shows realistic movement.
-This producer has no dedicated ``.avsc`` file on disk — its Avro schema is
-defined inline and registered automatically with Schema Registry.
+Its Avro schema lives in ``schemas/delivery_event.avsc`` and is registered
+automatically with Schema Registry.
 """
 
 from __future__ import annotations
 
 import dataclasses
-import json
 import os
 import random
 import time
@@ -55,56 +54,12 @@ _STATE_CENTROIDS: dict[str, tuple[float, float]] = {
     "NA": (-14.24, -51.93),  # Brazil centroid fallback
 }
 
-_DELIVERY_SCHEMA = json.dumps(
-    {
-        "type": "record",
-        "name": "DeliveryEvent",
-        "namespace": "br.com.olist.events",
-        "fields": [
-            {"name": "event_id", "type": "string"},
-            {"name": "order_id", "type": "string"},
-            {
-                "name": "delivery_status",
-                "type": {
-                    "type": "enum",
-                    "name": "DeliveryStatus",
-                    "symbols": [
-                        "PICKED_UP",
-                        "IN_TRANSIT",
-                        "OUT_FOR_DELIVERY",
-                        "DELIVERED",
-                    ],
-                },
-            },
-            {"name": "customer_state", "type": "string"},
-            {"name": "latitude", "type": "double"},
-            {"name": "longitude", "type": "double"},
-            {
-                "name": "event_timestamp",
-                "type": {"type": "long", "logicalType": "timestamp-millis"},
-            },
-            {
-                "name": "metadata",
-                "type": {
-                    "type": "record",
-                    "name": "DeliveryMetadata",
-                    "fields": [
-                        {"name": "source", "type": "string"},
-                        {"name": "version", "type": "string", "default": "1.0"},
-                        {"name": "producer_id", "type": "string"},
-                    ],
-                },
-            },
-        ],
-    }
-)
-
 _STATUS_SEQUENCE = ("PICKED_UP", "IN_TRANSIT", "OUT_FOR_DELIVERY", "DELIVERED")
 
 
 @dataclasses.dataclass
 class DeliveryEvent:
-    """A delivery tracking event (inline Avro schema).
+    """A delivery tracking event matching ``delivery_event.avsc``.
 
     Attributes:
         event_id: Globally unique event identifier (UUID4).
@@ -140,7 +95,7 @@ class DeliveryProducer(BaseProducer):
         data_dir: str | os.PathLike[str] = "data/raw",
         **kwargs: Any,
     ) -> None:
-        """Initialize the delivery producer with the inline Avro schema.
+        """Initialize the delivery producer and load the customers dimension.
 
         Args:
             bootstrap_servers: Kafka bootstrap servers.
@@ -155,7 +110,6 @@ class DeliveryProducer(BaseProducer):
             schema_registry_url,
             topic,
             events_per_second,
-            schema_str=_DELIVERY_SCHEMA,
             source="delivery-producer",
             **kwargs,
         )
@@ -164,8 +118,8 @@ class DeliveryProducer(BaseProducer):
         self._load_customers()
 
     def _default_schema_path(self) -> Path:
-        """Not used — the delivery schema is provided inline."""
-        raise NotImplementedError("DeliveryProducer uses an inline schema")
+        """Return the path to ``delivery_event.avsc``."""
+        return Path(__file__).parent / "schemas" / "delivery_event.avsc"
 
     def _load_customers(self) -> None:
         """Load the customer → state mapping used to place GPS coordinates."""

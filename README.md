@@ -1,9 +1,7 @@
 # ⚡ Real-time Streaming Pipeline — Olist
 
-[![CI](https://img.shields.io/badge/CI-passing-brightgreen)](#)
-[![Coverage](https://img.shields.io/badge/coverage-87%25-green)](#)
 [![Python](https://img.shields.io/badge/python-3.11-blue)](#)
-[![Kafka](https://img.shields.io/badge/Kafka-7.5-231F20?logo=apachekafka)](#)
+[![Confluent Platform](https://img.shields.io/badge/Confluent%20Platform-7.5%20(Kafka%203.5)-231F20?logo=apachekafka)](#)
 [![Spark](https://img.shields.io/badge/Spark-3.4-E25A1C?logo=apachespark)](#)
 [![Delta Lake](https://img.shields.io/badge/Delta%20Lake-2.4-00ADD8)](#)
 
@@ -53,7 +51,7 @@ de negócio atualizadas a cada 5 segundos. Observabilidade completa com
                                             │  KPIs · charts · tabela   │
                                             └──────────────────────────┘
 
-   PROMETHEUS  ◄── métricas (throughput, error rate, consumer lag) ──►  GRAFANA
+   PROMETHEUS  ◄── métricas (produtores + Spark streaming) ──►  GRAFANA
 ```
 
 ---
@@ -70,24 +68,22 @@ de negócio atualizadas a cada 5 segundos. Observabilidade completa com
 
 ---
 
-## 🚀 Setup em 5 comandos
+## 🚀 Como rodar
+
+Só precisa de Docker (com ≥ 8 GB de RAM) e Git; funciona igual no Windows,
+macOS e Linux.
 
 ```bash
-# 1. Clonar
-git clone <seu-fork> && cd streaming-pipeline-olist
-
-# 2. Subir infra, criar tópicos, registrar schemas, preparar dados
-make setup
-
-# 3. Baixar o dataset Olist (ver seção abaixo) — ou usar amostra sintética:
-python scripts/seed_data.py --sample        # dispensa o Kaggle
-
-# 4. Subir produtores + pipeline + dashboard
-make up-all
-
-# 5. Abrir o dashboard ao vivo
-make dashboard            # http://localhost:8501
+git clone <seu-fork> && cd streaming-pipeline-real-time
+docker compose up -d --build
 ```
+
+O serviço `init` roda uma vez antes de produtores e pipeline: cria os tópicos,
+registra os schemas Avro e prepara os dados. Se `data/raw/` tiver os CSVs reais
+da Olist (ver seção abaixo), eles são usados; senão, gera uma amostra sintética.
+O dashboard fica em http://localhost:8501 assim que o Gold tiver dados.
+
+Com `make` disponível, `make up-all` faz o mesmo e `make help` lista os atalhos.
 
 > Dica para gravação de vídeo (LinkedIn): o produtor já roda com `PRODUCER_LOOP=true`,
 > reiniciando o CSV ao chegar no fim — os contadores sobem continuamente.
@@ -98,10 +94,11 @@ make dashboard            # http://localhost:8501
 |---|---|
 | Streamlit Dashboard | http://localhost:8501 |
 | Kafka UI | http://localhost:8080 |
-| Spark Master UI | http://localhost:8090 |
+| Spark UI (driver do pipeline) | http://localhost:4040 |
 | Grafana | http://localhost:3000 (`admin` / `admin`) |
 | Prometheus | http://localhost:9090 |
 | Schema Registry | http://localhost:8081 |
+| order-status-service (Kafka Streams) | http://localhost:8088/orders/{order_id} |
 
 ---
 
@@ -110,7 +107,7 @@ make dashboard            # http://localhost:8501
 Requer a [Kaggle API](https://github.com/Kaggle/kaggle-api) configurada (`~/.kaggle/kaggle.json`):
 
 ```bash
-pip install kaggle
+pip install kaggle   # no host, só para o download
 kaggle datasets download -d olistbr/brazilian-ecommerce -p data/raw --unzip
 ```
 
@@ -119,8 +116,10 @@ Após o download, `data/raw/` deve conter, entre outros:
 `olist_customers_dataset.csv`, `olist_order_payments_dataset.csv`,
 `olist_products_dataset.csv`.
 
-Depois rode `make seed` para gerar a dimensão `data/reference/customers` (parquet)
-usada no join estático do enrichment.
+Com os CSVs em `data/raw/` antes do `docker compose up`, o `init` os usa e gera a
+dimensão `data/reference/customers` (parquet) do join estático do enrichment.
+Para trocar a amostra sintética pelos dados reais depois, rode
+`docker compose down -v`, apague `data/` (exceto os CSVs novos) e suba de novo.
 
 ---
 
@@ -161,6 +160,104 @@ job que falhou (até 3 tentativas) e faz shutdown gracioso em SIGINT/SIGTERM.
 
 ---
 
+## ☕ `order-status-service` — Kafka Streams (Java)
+
+**Papel no pipeline:** o Spark responde "quanto vendemos por janela"; este serviço
+responde "em que pé está o pedido X agora?" e "que pedidos violam uma regra?". Ele
+junta os três tópicos de entrada num estado atual por pedido, publica esse estado
+em `order-status` (compactado) e gera alertas em `order-alerts`. É a fonte do
+estado de pedido que a camada de serviço (MongoDB, fase 2) vai expor.
+
+```
+orders-raw ──────┐                                          ┌─► order-status (compactado)
+payments-raw ────┼─► repartition ─► cogroup ─► KTable ──────┤
+delivery-events ─┘   (3 partições)            (order_id)    └─► regras ─► order-alerts
+                                                 ▲
+                              GET /orders/{id} ──┘  (interactive query, store order-state)
+```
+
+**Ciclo de vida** (`status`): `CREATED → PAID → SHIPPED → DELIVERED`, e
+`CANCELED` como estado terminal.
+
+| Marco | Evento que o define |
+|---|---|
+| `created_at` | `ORDER_CREATED` |
+| `paid_at` | primeiro `PaymentEvent` do pedido (`ORDER_APPROVED` fica em `approved_at`) |
+| `shipped_at` | `ORDER_SHIPPED` ou `PICKED_UP` da transportadora, o que vier antes |
+| `delivered_at` | `ORDER_DELIVERED` ou `DELIVERED` da transportadora |
+| `canceled_at` | `ORDER_CANCELED` |
+
+**Regras de alerta** (definidas a partir dos campos que os eventos têm de fato):
+
+| Alerta | Quando |
+|---|---|
+| `PAYMENT_TIMEOUT` | pedido criado, sem nenhum `PaymentEvent` e não cancelado `PAYMENT_TIMEOUT_MINUTES` (15) depois, em *stream time* |
+| `DELIVERED_AFTER_CANCELLATION` | a transportadora reporta `DELIVERED` para um pedido cancelado, em qualquer ordem de chegada |
+
+Cada alerta sai uma vez por pedido, com `alert_id = <tipo>:<order_id>`, então um
+consumidor pode fazer upsert idempotente.
+
+**Decisões técnicas**
+
+| Decisão | Por quê |
+|---|---|
+| `cogroup` → uma `KTable` por `order_id` | Três fontes com tipos diferentes agregadas num único estado, sem join em cascata nem tipo intermediário. |
+| Repartição das três entradas | `delivery-events` tem 2 partições e as outras 3; e os produtores Python usam o particionador do librdkafka (CRC32), não o murmur2 do Java. Repartir pelo particionador do Streams co-particiona as três e faz `queryMetadataForKey` achar a partição certa. Alternativa (não adotada, mudaria os produtores): `partitioner=murmur2_random` no librdkafka. |
+| Agregação comutativa e idempotente | Cada marco guarda o menor timestamp; o último status da transportadora é o de maior timestamp; pagamentos são deduplicados por conteúdo (`tipo\|valor\|parcelas`), porque o loop de replay reenvia o mesmo pagamento com outro `event_id`. Resultado: eventos fora de ordem ou repetidos convergem para o mesmo estado (testado com as 120 ordens possíveis de 5 eventos). |
+| Punctuator em **stream time** | O prazo de pagamento é medido pelo timestamp dos registros, não pelo relógio: reprocessar um backlog não dispara alertas falsos só porque o pagamento ainda está mais atrás no tópico. Pedidos sem pagamento ficam numa store própria (`awaiting-payment`), então o punctuator não varre a KTable inteira. |
+| `processing.guarantee=exactly_once_v2` | Offsets consumidos, changelogs das stores e escritas em `order-status`/`order-alerts` na mesma transação. |
+| Erro de desserialização: log e segue | Um registro corrompido não derruba o serviço; aparece na métrica `dropped-records` do Kafka Streams. |
+| Serdes Avro da Confluent | Mesmo Schema Registry dos produtores; as classes de entrada são geradas dos mesmos `.avsc` de `producers/schemas` (sem cópia). |
+
+**Como usar** (sobe junto com `docker compose up -d --build`):
+
+```bash
+curl http://localhost:8088/orders/order_000000   # estado atual (JSON)
+curl http://localhost:8088/metrics               # Prometheus
+curl http://localhost:8088/health
+```
+
+Exemplo real (saída do teste de fumaça do CI):
+
+```json
+{
+  "order_id": "order_000000", "status": "DELIVERED", "customer_state": "PR",
+  "order_value": 255.92, "paid_amount": 271.51, "payment_count": 1,
+  "payment_types": ["DEBIT_CARD"],
+  "created_at": "2026-10-06T17:20:26.502Z", "paid_at": "2026-10-06T17:21:09.491Z",
+  "shipped_at": "2026-10-06T17:20:26.455Z", "delivered_at": "2026-10-06T17:20:26.786Z",
+  "last_delivery_status": "DELIVERED", "event_count": 9
+}
+```
+
+Com várias instâncias, `GET /orders/{id}` numa instância que não tem a partição
+do pedido responde `307` apontando para a dona (via `application.server`).
+
+**Testes:** `order-status-service/src/test` usa `TopologyTestDriver` com Schema
+Registry em memória (`mock://`), sem broker: ciclo de vida, todas as permutações
+de chegada, deduplicação, replay, as duas regras (casos positivos e negativos) e a
+consulta à store. `scripts/smoke_order_status.sh` sobe a stack real e consulta o
+serviço; roda no CI. Build e testes: `cd order-status-service && ./gradlew test`
+(ou só pelo CI/Docker; não precisa de Java instalado para rodar o pipeline).
+
+**Limitações conhecidas**
+
+- Os três produtores percorrem os CSVs em ritmos independentes, então os tempos
+  entre fontes não são coerentes: `PICKED_UP` pode vir antes de `ORDER_CREATED`, e o
+  produtor de pagamentos soma até 5 min "no futuro" ao `event_timestamp`
+  (`paid_at` posterior à entrega). O serviço reporta o que os eventos dizem.
+- Na amostra sintética o pagamento sai do mesmo índice do pedido, então quase não
+  há `PAYMENT_TIMEOUT`. Com o dataset da Kaggle, os pagamentos chegam em outra
+  ordem e o alerta dispara muito (o que é o comportamento esperado da regra).
+- Na amostra sintética `paid_amount` difere de `order_value` (o gerador sorteia o
+  frete duas vezes); por isso não há regra de divergência de valor.
+- O loop de replay reusa os `order_id`: o serviço trata a segunda passada como o
+  mesmo pedido (marcos e valores não mudam; só `event_count`/`updated_at`).
+- Deduplicar pagamento por conteúdo junta dois pagamentos idênticos do mesmo
+  pedido (mesmo tipo, valor e parcelas); o evento não traz o número sequencial.
+
+---
+
 ## 📊 Monitoramento
 
 Grafana provisiona automaticamente o datasource Prometheus e o dashboard
@@ -170,7 +267,9 @@ Grafana provisiona automaticamente o datasource Prometheus e o dashboard
 |---|---|
 | Throughput | `rate(kafka_messages_produced_total{status="success"}[1m])` |
 | Error rate | `rate(kafka_messages_produced_total{status="error"}[1m])` |
-| Consumer lag | lag por grupo de consumidores da ingestão |
+| Spark ingestion | `metrics_olist_driver_spark_streaming_ingestion_bronze_{inputRate,processingRate}_total_Value` |
+| order-status-service: eventos/s | `sum by (source) (rate(order_status_input_events_total[1m]))` |
+| order-status-service: alertas | `sum by (type) (increase(order_status_alerts_total[5m]))` |
 | Total produzido | `sum(kafka_messages_produced_total{status="success"})` |
 
 ```
@@ -179,7 +278,7 @@ Grafana provisiona automaticamente o datasource Prometheus e o dashboard
 │  [screenshot placeholder]  │  │  [screenshot placeholder]  │
 └───────────────────────────┘  └───────────────────────────┘
 ┌───────────────────────────┐  ┌───────────────────────────┐
-│  Consumer lag (records)    │  │  Total messages produced   │
+│  Spark ingestion (rows/s)  │  │  Total messages produced   │
 │  [screenshot placeholder]  │  │  [screenshot placeholder]  │
 └───────────────────────────┘  └───────────────────────────┘
 ```
@@ -193,11 +292,8 @@ Grafana provisiona automaticamente o datasource Prometheus e o dashboard
 <details>
 <summary><b>1. OOM no Spark (executor/driver morre)</b></summary>
 
-Reduza o volume por micro-batch e a memória do worker:
-```yaml
-# docker-compose.yml → spark-worker
-SPARK_WORKER_MEMORY: 1G
-```
+O Spark roda em modo `local[*]` dentro do contêiner `spark-pipeline`.
+Reduza o volume por micro-batch:
 ```python
 # ingestion_job.py
 .option("maxOffsetsPerTrigger", "1000")   # de 10000
@@ -206,11 +302,14 @@ Garanta ≥ 8 GB (idealmente 12 GB) disponíveis ao Docker.
 </details>
 
 <details>
-<summary><b>2. Consumer lag crescente</b></summary>
+<summary><b>2. Ingestão não acompanha a produção (backlog crescente)</b></summary>
 
-O lag aparece no dashboard (sidebar) e no Grafana. Causas comuns: `EVENTS_PER_SECOND`
+O Spark guarda os offsets do Kafka no checkpoint e não os confirma num consumer
+group, então não há "lag de grupo" para medir. Use o painel **Spark ingestion** do
+Grafana: se `processed` fica abaixo de `input` por vários minutos, o backlog está
+crescendo. Causas comuns: `EVENTS_PER_SECOND`
 alto demais para a capacidade do Spark, ou trigger muito curto. Aumente paralelismo
-(`SPARK_WORKER_CORES`), aumente `maxOffsetsPerTrigger` **com** mais memória, ou
+(mais CPUs para o Docker; o `local[*]` usa todas), aumente `maxOffsetsPerTrigger` **com** mais memória, ou
 reduza a taxa de produção (`EVENTS_PER_SECOND`).
 </details>
 
@@ -275,7 +374,8 @@ exceto o teste marcado `RUN_KAFKA_IT=1`, que exige um broker rodando.
 producers/      # Avro producers (base + orders/payments/delivery) e schemas .avsc
 spark_jobs/     # ingestion, enrichment, aggregation, runner, utils (kafka/delta)
 dashboard/      # Streamlit app + queries Delta
-scripts/        # create_topics, register_schemas, seed_data, check_pipeline
+scripts/        # create_topics, register_schemas, seed_data, check_pipeline, smoke_order_status.sh
+order-status-service/  # Kafka Streams (Java 17, Gradle): estado por pedido + alertas
 monitoring/     # Prometheus + provisioning e dashboard Grafana
 tests/          # unit, integration, e2e
 ```
@@ -307,7 +407,7 @@ tests/          # unit, integration, e2e
 > os dois calos clássicos que derrubam pipelines de streaming em produção.
 >
 > 𝟯. 𝗢𝗯𝘀𝗲𝗿𝘃𝗮𝗯𝗶𝗹𝗶𝗱𝗮𝗱𝗲 𝗱𝗲𝘀𝗱𝗲 𝗼 𝗱𝗶𝗮 𝘇𝗲𝗿𝗼. Métricas Prometheus nos produtores
-> (throughput e error rate), consumer lag no dashboard e no Grafana, e um
+> (throughput e error rate), taxas de entrada/processamento do Spark no Grafana, e um
 > `check_pipeline.py` que valida Kafka, Schema Registry, Spark, Delta, dashboard e
 > Prometheus em um comando.
 >

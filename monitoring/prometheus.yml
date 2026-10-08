@@ -1,0 +1,48 @@
+# =============================================================================
+# Prometheus scrape configuration for the Olist streaming pipeline.
+# =============================================================================
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    pipeline: olist-streaming
+
+scrape_configs:
+  # ---- Prometheus self-monitoring ----
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # ---- Producers (prometheus_client HTTP server on :8000 in each container) ----
+  # Exposes kafka_messages_produced_total{topic,status}.
+  - job_name: producers
+    static_configs:
+      - targets:
+          - "orders-producer:8000"
+          - "payments-producer:8000"
+          - "delivery-producer:8000"
+        labels:
+          component: producer
+
+  # ---- Spark driver (local mode) ----
+  # PrometheusServlet sink enabled in spark_jobs/spark_session.py; with
+  # spark.sql.streaming.metricsEnabled it exports per-query input/processing
+  # rates, latency and state size, prefixed metrics_olist_driver_.
+  - job_name: spark
+    metrics_path: /metrics/prometheus/
+    static_configs:
+      - targets:
+          - "spark-pipeline:4040"
+        labels:
+          component: spark
+
+  # ---- order-status-service (Kafka Streams + Micrometer) ----
+  # Kafka Streams client metrics (kafka_stream_*), JVM metrics and the
+  # service's own order_status_* counters.
+  - job_name: order-status-service
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "order-status-service:8080"
+        labels:
+          component: kafka-streams

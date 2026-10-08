@@ -404,6 +404,9 @@ services:
       BRONZE_PATH: /data/bronze/orders
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       DASHBOARD_PORT: "8501"
+      # Read-only user; used by the order lookup page (pages/).
+      MONGO_URI: mongodb://dashboard:${MONGO_DASHBOARD_PASSWORD:?missing in .env, run scripts/gen_env.sh}@mongo:27017/olist_serving?authSource=admin
+      MONGO_DB: olist_serving
     volumes:
       - ./data:/data
     healthcheck:

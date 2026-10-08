@@ -70,20 +70,35 @@ de negócio atualizadas a cada 5 segundos. Observabilidade completa com
 
 ## 🚀 Como rodar
 
-Só precisa de Docker (com ≥ 8 GB de RAM) e Git; funciona igual no Windows,
+Só precisa de Docker (com ≥ 8 GB de RAM; a stack completa usa ~5,7 GiB, ver
+[consumo medido](#consumo-de-memória-medido)) e Git
+(no Windows, rode os scripts `.sh` pelo Git Bash); funciona igual no Windows,
 macOS e Linux.
 
 ```bash
-git clone <seu-fork> && cd streaming-pipeline-real-time
+git clone <seu-fork> && cd streaming-mongodb-scala
+scripts/gen_env.sh          # só na primeira vez: senhas do MongoDB no .env
 docker compose up -d --build
 ```
+
+O MongoDB exige senhas, e elas não ficam no repositório: `scripts/gen_env.sh`
+cria (ou completa) o `.env`, ignorado pelo git, com senhas aleatórias e nunca as
+imprime. Sem elas o compose para com
+`required variable MONGO_ROOT_PASSWORD is missing a value: missing in .env, run scripts/gen_env.sh`.
+Por isso, no primeiro uso, são dois comandos e não um.
 
 O serviço `init` roda uma vez antes de produtores e pipeline: cria os tópicos,
 registra os schemas Avro e prepara os dados. Se `data/raw/` tiver os CSVs reais
 da Olist (ver seção abaixo), eles são usados; senão, gera uma amostra sintética.
 O dashboard fica em http://localhost:8501 assim que o Gold tiver dados.
 
-Com `make` disponível, `make up-all` faz o mesmo e `make help` lista os atalhos.
+Com `make` disponível, `make up-all` gera o `.env` se faltar e sobe tudo;
+`make help` lista os atalhos.
+
+> **Windows, clone feito antes do `.gitattributes`:** se o build falhar com
+> `./gradlew: not found`, os arquivos foram extraídos com CRLF (padrão do Git for
+> Windows). Com a árvore limpa, rode `git rm -r --cached . && git reset --hard`
+> para extraí-los de novo com LF.
 
 > Dica para gravação de vídeo (LinkedIn): o produtor já roda com `PRODUCER_LOOP=true`,
 > reiniciando o CSV ao chegar no fim — os contadores sobem continuamente.
@@ -99,6 +114,9 @@ Com `make` disponível, `make up-all` faz o mesmo e `make help` lista os atalhos
 | Prometheus | http://localhost:9090 |
 | Schema Registry | http://localhost:8081 |
 | order-status-service (Kafka Streams) | http://localhost:8088/orders/{order_id} |
+| Consulta de pedido (MongoDB) | http://localhost:8501/Consulta_de_pedido |
+| Kafka Connect (REST) | http://localhost:8083/connectors?expand=status |
+| MongoDB | `mongodb://localhost:27018` (só em 127.0.0.1; porta em `MONGO_HOST_PORT`) |
 
 ---
 
@@ -166,7 +184,7 @@ job que falhou (até 3 tentativas) e faz shutdown gracioso em SIGINT/SIGTERM.
 responde "em que pé está o pedido X agora?" e "que pedidos violam uma regra?". Ele
 junta os três tópicos de entrada num estado atual por pedido, publica esse estado
 em `order-status` (compactado) e gera alertas em `order-alerts`. É a fonte do
-estado de pedido que a camada de serviço (MongoDB, fase 2) vai expor.
+estado de pedido que a camada de serviço (MongoDB, seção seguinte) expõe.
 
 ```
 orders-raw ──────┐                                          ┌─► order-status (compactado)
@@ -255,6 +273,157 @@ serviço; roda no CI. Build e testes: `cd order-status-service && ./gradlew test
   mesmo pedido (marcos e valores não mudam; só `event_count`/`updated_at`).
 - Deduplicar pagamento por conteúdo junta dois pagamentos idênticos do mesmo
   pedido (mesmo tipo, valor e parcelas); o evento não traz o número sequencial.
+
+---
+
+## 🍃 Camada de serviço — MongoDB via Kafka Connect
+
+**Papel no pipeline:** guardar o estado atual de cada pedido e os alertas num
+banco de consulta, para quem precisa ler "o pedido X" sem consumir Kafka nem
+depender de qual instância do Kafka Streams tem a partição do pedido.
+
+```
+order-status ─┐                            ┌─► olist_serving.order_status  (1 doc por order_id)
+              ├─► Kafka Connect ──────────┤
+order-alerts ─┘   MongoDB Sink (3 tasks    └─► olist_serving.order_alerts  (1 doc por alert_id)
+                  por conector, upsert)          │
+        falha de conversão/escrita ─► order-status-dlq / order-alerts-dlq
+                                                 ▼
+                         Streamlit: página "Consulta de pedido" (usuário só-leitura)
+```
+
+| Peça | O que é |
+|---|---|
+| `mongo` | `mongo:7.0.43`, cache WiredTiger de 256 MB. `mongo/init/01-serving.js` roda no primeiro start do volume: cria os usuários e os índices. |
+| `connect` | `connect/Dockerfile`: `cp-kafka-connect:7.5.0` (Kafka 3.5, Java 11) + `mongo-kafka-connect-3.1.2-all.jar` do Maven Central, com SHA-256 conferido no build. Modo distribuído (um worker), chave `StringConverter`, valor `AvroConverter` + Schema Registry. |
+| `connect-init` | One-shot (`curlimages/curl`): `PUT /connectors/<nome>/config` para cada JSON de `connect/connectors/` (cria ou atualiza; rodar de novo não duplica) e espera conector e tarefas `RUNNING`. |
+| Página `Consulta de pedido` | `dashboard/pages/1_Consulta_de_pedido.py` (a página original não mudou). Status, linha do tempo, pagamentos, alertas do pedido e os pedidos atualizados mais recentes por status. A lógica fica em `dashboard/order_lookup.py`, testada sem MongoDB. |
+
+**Configuração do sink** (`connect/connectors/*.json`):
+
+| Configuração | Por quê |
+|---|---|
+| `PartialValueStrategy` (`order_id` / `alert_id`) + `ReplaceOneBusinessKeyStrategy` | Upsert pela chave de negócio: o documento do pedido é substituído pelo estado mais novo. O `_id` continua um `ObjectId`; a unicidade é do índice único em `order_id` (`alert_id` nos alertas). |
+| `errors.tolerance=all` + DLQ | Um registro que não converte ou não grava vai para `order-status-dlq` / `order-alerts-dlq` com o erro nos headers, e o conector segue. O teste de fumaça falha se alguma DLQ tiver registros, então a tolerância não esconde erro. |
+| `connection.uri=${env:MONGO_SINK_URI}` | A URI com senha só existe como variável de ambiente do worker, lida pelo `EnvVarConfigProvider`. O JSON e a API REST (`GET /connectors/.../config`) mostram só o placeholder, e `config.providers.env.param.allowlist.pattern=^MONGO_SINK_URI$` impede um conector de ler qualquer outra variável. |
+| `tasks.max=3` | Uma tarefa por partição de `order-status`. Como o tópico é chaveado por `order_id`, todas as versões de um pedido passam pela mesma tarefa, em ordem: a última escrita é o estado mais novo. |
+
+**Usuários (menor privilégio)**, criados em `admin`, com papel só em `olist_serving`:
+
+| Usuário | Papel | Quem usa |
+|---|---|---|
+| `connect` | `readWrite` | Kafka Connect |
+| `dashboard` | `read` | Streamlit (o teste de fumaça confirma que um `insert` dá `Unauthorized`) |
+| `spark` | `readWrite` | Job Scala (fase 3) |
+
+**Índices:** `order_status` com `{order_id: 1}` único e `{status: 1, updated_at: -1}`
+(serve a lista de recentes por status; conferido com `explain()`); `order_alerts`
+com `{alert_id: 1}` único e `{order_id: 1}`.
+
+### Por que o microsserviço não grava direto no MongoDB
+
+- **Separação de responsabilidades.** O `order-status-service` calcula o estado;
+  ele não sabe quem consome. O tópico compactado `order-status` é o contrato: hoje
+  o MongoDB lê dele, amanhã outro destino lê do mesmo tópico sem tocar no serviço.
+- **Garantia de ponta a ponta sem transação distribuída.** O Kafka Streams é
+  exactly-once até o tópico (`exactly_once_v2`). Gravar no MongoDB de dentro dele
+  sairia da transação: um reprocessamento repetiria a escrita. Com o sink, a
+  entrega no MongoDB é *at-least-once* e o upsert por `order_id` é idempotente,
+  então repetir um registro dá o mesmo documento.
+- **Reprocessamento sem código.** Para recriar a coleção, basta apagá-la e
+  reiniciar o conector do início do tópico (ver abaixo). O tópico compactado
+  guarda o último estado de cada pedido.
+- **Retries e backpressure prontos.** O Connect controla offsets, tenta de novo
+  quando o MongoDB fica indisponível, e o consumo segue o ritmo das escritas. Se
+  o banco ficar lento, o Kafka Streams continua processando: o atraso fica no
+  conector, visível no consumer group `connect-order-status-mongo-sink`.
+
+### Como usar
+
+```bash
+curl -s 'http://localhost:8083/connectors?expand=status'      # conectores e tarefas
+# Página: http://localhost:8501/Consulta_de_pedido
+
+# Shell no MongoDB como usuário só-leitura (a senha fica dentro do contêiner):
+docker compose exec mongo sh -c 'mongosh "mongodb://dashboard:$MONGO_DASHBOARD_PASSWORD@localhost:27017/olist_serving?authSource=admin"'
+> db.order_status.findOne({order_id: "order_000000"}, {_id: 0})
+```
+
+Reprocessar `order_status` do zero (apaga os documentos e mantém os índices):
+
+```bash
+curl -X DELETE http://localhost:8083/connectors/order-status-mongo-sink
+docker compose exec mongo sh -c 'mongosh --quiet -u root -p "$MONGO_INITDB_ROOT_PASSWORD" \
+  --eval "db.getSiblingDB(\"olist_serving\").order_status.deleteMany({})"'
+docker compose exec kafka kafka-consumer-groups --bootstrap-server kafka:29092 \
+  --group connect-order-status-mongo-sink --reset-offsets --to-earliest \
+  --topic order-status --execute
+docker compose up connect-init          # registra o conector de novo
+```
+
+O reset de offsets só é aceito quando o group fica inativo, alguns segundos
+depois do `DELETE`; se ele reclamar de membros ativos, repita.
+
+Exemplo real (saída do teste de fumaça, documento de `order_000000` no MongoDB,
+com o mesmo status que `GET /orders/order_000000` retornou):
+
+```js
+{
+  order_id: 'order_000000', status: 'CANCELED', customer_state: 'DF',
+  order_value: 224.81, paid_amount: 223.09, payment_count: 1, payment_types: [ 'BOLETO' ],
+  created_at: ISODate('2026-10-08T17:58:05.092Z'), canceled_at: ISODate('2026-10-08T17:58:29.918Z'),
+  delivered_at: ISODate('2026-10-08T17:58:05.148Z'), last_delivery_status: 'DELIVERED',
+  event_count: Long('52'), ...
+}
+```
+
+**Testes:** `tests/unit/test_order_lookup.py` (busca, linha do tempo, pagamentos,
+alertas, filtro/ordem/limite) com uma coleção falsa; a página foi exercitada com
+o `AppTest` do Streamlit contra o MongoDB real. `scripts/smoke_order_status.sh`
+(no CI) sobe Kafka, produtores, serviço, MongoDB e Connect e confere:
+conectores `RUNNING`, `order_000000` com o mesmo status na API e no MongoDB
+(com nova tentativa, porque os produtores seguem rodando), alertas em
+`order_alerts`, DLQs vazias e o usuário `dashboard` sem permissão de escrita.
+As senhas do CI são geradas na hora por `scripts/gen_env.sh`.
+
+**Limitações conhecidas**
+
+- Os usuários e índices só são criados no primeiro start de um volume vazio
+  (comportamento da imagem oficial). Trocar uma senha no `.env` depois disso
+  exige `updateUser` ou `docker compose down -v` (que apaga os dados do MongoDB).
+- Um único worker do Connect, sem réplica do MongoDB: é um ambiente de
+  demonstração, sem alta disponibilidade.
+- O MongoDB e o Connect ainda não aparecem no Prometheus/Grafana.
+- Durante um reprocessamento a coleção passa por estados intermediários (as
+  versões antigas do tópico, antes da compactação) até alcançar o fim do tópico.
+- A linha do tempo da página mostra os marcos na ordem dos horários dos eventos,
+  que nem sempre é a ordem do negócio (ver limitações do serviço acima).
+
+### Consumo de memória medido
+
+`docker stats` em 2026-10-08, Docker Desktop (WSL2) no Windows, amostra sintética:
+
+| Serviço | RAM |
+|---|---|
+| `spark-pipeline` | 2,5 GiB |
+| `connect` (heap `-Xmx512m`) | 0,9 GiB |
+| `kafka` | 0,5–0,7 GiB |
+| `schema-registry`, `kafka-ui` | ~0,35 GiB cada |
+| `mongo` | 0,3 GiB |
+| `order-status-service` | 0,24 GiB |
+| demais (zookeeper, grafana, prometheus, dashboard, 3 produtores) | ~0,55 GiB |
+| **Total** | **~5,7 GiB** (3,1 GiB sem o `spark-pipeline`) |
+
+O dashboard abre uma SparkSession própria quando alguém visita a página
+principal; esse acréscimo não foi medido. A Fase 2 somou ~1,2 GiB (MongoDB +
+Connect) aos ~4,7 GiB da stack anterior.
+
+Na máquina usada para medir (32 GB, com navegador, IDEs e outros apps abertos),
+o Docker Desktop caiu algumas vezes ao rodar a stack completa junto com testes
+Spark em outro contêiner. Os logs mostram o backend encerrado sem erro próprio,
+com a memória comprometida do Windows perto do limite. Se acontecer, feche
+aplicativos ou limite a VM em `%UserProfile%\.wslconfig` (`[wsl2]` /
+`memory=10GB`), e rode `wsl --shutdown` antes de reabrir o Docker Desktop.
 
 ---
 
@@ -374,8 +543,10 @@ exceto o teste marcado `RUN_KAFKA_IT=1`, que exige um broker rodando.
 producers/      # Avro producers (base + orders/payments/delivery) e schemas .avsc
 spark_jobs/     # ingestion, enrichment, aggregation, runner, utils (kafka/delta)
 dashboard/      # Streamlit app + queries Delta
-scripts/        # create_topics, register_schemas, seed_data, check_pipeline, smoke_order_status.sh
+scripts/        # create_topics, register_schemas, seed_data, check_pipeline, smoke_order_status.sh, gen_env.sh
 order-status-service/  # Kafka Streams (Java 17, Gradle): estado por pedido + alertas
+connect/        # imagem do Kafka Connect + MongoDB sink, configs dos conectores e registro
+mongo/init/     # usuários de menor privilégio e índices do olist_serving
 monitoring/     # Prometheus + provisioning e dashboard Grafana
 tests/          # unit, integration, e2e
 ```

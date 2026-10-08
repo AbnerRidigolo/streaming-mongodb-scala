@@ -75,6 +75,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Compose needs the MongoDB passwords; random ones, only for this run.
+      - run: scripts/gen_env.sh
       - run: docker compose build
       # Spark 3.4 needs Java 8/11/17; fail if a base image drifts to Java 21.
       - name: Spark images run Java 17
@@ -85,7 +87,7 @@ jobs:
           done
 
   smoke-order-status:
-    name: Smoke test (Kafka + producers + order-status-service)
+    name: Smoke test (Kafka + producers + order-status-service + MongoDB sink)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -100,7 +102,7 @@ jobs:
           { echo '## order-status-service smoke test'; echo '```'; cat smoke.log 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Container logs on failure
         if: failure()
-        run: docker compose logs --no-color --tail=200 init order-status-service kafka
+        run: docker compose logs --no-color --tail=200 init order-status-service kafka mongo connect connect-init
       - name: Stop the stack
         if: always()
         run: docker compose down -v

@@ -1,0 +1,5 @@
+# Check out text files with LF on every OS: shell scripts and gradlew run
+# inside Linux containers, where CRLF breaks the shebang.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.jar binary

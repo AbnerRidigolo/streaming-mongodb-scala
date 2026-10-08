@@ -1,0 +1,18 @@
+{
+  "connector.class": "com.mongodb.kafka.connect.MongoSinkConnector",
+  "tasks.max": "3",
+  "topics": "order-alerts",
+  "connection.uri": "${env:MONGO_SINK_URI}",
+  "database": "olist_serving",
+  "collection": "order_alerts",
+  "document.id.strategy": "com.mongodb.kafka.connect.sink.processor.id.strategy.PartialValueStrategy",
+  "document.id.strategy.partial.value.projection.type": "AllowList",
+  "document.id.strategy.partial.value.projection.list": "alert_id",
+  "document.id.strategy.overwrite.existing": "true",
+  "writemodel.strategy": "com.mongodb.kafka.connect.sink.writemodel.strategy.ReplaceOneBusinessKeyStrategy",
+  "errors.tolerance": "all",
+  "errors.log.enable": "true",
+  "errors.deadletterqueue.topic.name": "order-alerts-dlq",
+  "errors.deadletterqueue.topic.replication.factor": "1",
+  "errors.deadletterqueue.context.headers.enable": "true"
+}

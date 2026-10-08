@@ -1,0 +1,69 @@
+{
+  "type": "record",
+  "name": "OrderAlert",
+  "namespace": "br.com.olist.orderstatus.avro",
+  "doc": "A business-rule violation detected on an order lifecycle (order-alerts topic).",
+  "fields": [
+    {
+      "name": "alert_id",
+      "type": "string",
+      "doc": "Deterministic: <type>:<order_id>:<created_at>, so downstream upserts are idempotent."
+    },
+    {
+      "name": "order_id",
+      "type": "string"
+    },
+    {
+      "name": "alert_type",
+      "type": {
+        "type": "enum",
+        "name": "AlertType",
+        "symbols": [
+          "PAYMENT_TIMEOUT",
+          "DELIVERED_AFTER_CANCELLATION"
+        ]
+      }
+    },
+    {
+      "name": "detected_at",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      }
+    },
+    {
+      "name": "message",
+      "type": "string"
+    },
+    {
+      "name": "customer_state",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null,
+      "doc": "Snapshot for routing/aggregation downstream."
+    },
+    {
+      "name": "order_value",
+      "type": [
+        "null",
+        "double"
+      ],
+      "default": null,
+      "doc": "Snapshot of the order value."
+    },
+    {
+      "name": "created_at",
+      "type": [
+        "null",
+        {
+          "type": "long",
+          "logicalType": "timestamp-millis"
+        }
+      ],
+      "default": null,
+      "doc": "Lifecycle the alert refers to."
+    }
+  ]
+}

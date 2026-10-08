@@ -1,0 +1,375 @@
+name: streaming-pipeline-olist
+
+# ---------------------------------------------------------------------------
+# Real-time Streaming Pipeline — Olist
+# Full local environment: Kafka + Schema Registry + Spark (local mode) + Delta
+# + monitoring
+# ---------------------------------------------------------------------------
+
+x-common-env: &common-env
+  KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+  SCHEMA_REGISTRY_URL: http://schema-registry:8081
+
+services:
+  # -------------------------------------------------------------------------
+  # Coordination
+  # -------------------------------------------------------------------------
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    restart: unless-stopped
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      # cp-zookeeper 7.5 only whitelists `srvr`; the healthcheck needs `ruok`.
+      KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok,srvr"
+    # Persist Zookeeper with Kafka: Kafka's volume stores the cluster id, and a
+    # fresh Zookeeper would hand out a new one, so the broker would not start.
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo ruok | nc localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - streaming-network
+
+  # -------------------------------------------------------------------------
+  # Kafka broker
+  # -------------------------------------------------------------------------
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_MESSAGE_MAX_BYTES: 10485760
+      KAFKA_REPLICA_FETCH_MAX_BYTES: 10485760
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: localhost
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+    networks:
+      - streaming-network
+
+  # -------------------------------------------------------------------------
+  # Schema Registry
+  # -------------------------------------------------------------------------
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.5.0
+    container_name: schema-registry
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:29092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/subjects"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - streaming-network
+
+  # -------------------------------------------------------------------------
+  # Kafka UI
+  # -------------------------------------------------------------------------
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: olist-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
+      DYNAMIC_CONFIG_ENABLED: "true"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks:
+      - streaming-network
+
+  # -------------------------------------------------------------------------
+  # One-shot init: topics, Avro schemas, Olist data (real CSVs or a sample).
+  # Everything downstream waits for it to exit successfully.
+  # -------------------------------------------------------------------------
+  init:
+    build:
+      context: .
+      dockerfile: scripts/Dockerfile
+    container_name: init
+    restart: "no"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      DATA_DIR: /data/raw
+      CUSTOMERS_PATH: /data/reference/customers
+    volumes:
+      - ./data:/data
+    networks:
+      - streaming-network
+
+  # -------------------------------------------------------------------------
+  # Orders producer
+  # -------------------------------------------------------------------------
+  orders-producer:
+    build:
+      context: ./producers
+    container_name: orders-producer
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: python orders_producer.py
+    environment:
+      <<: *common-env
+      EVENTS_PER_SECOND: "10"
+      PRODUCER_ID: orders-producer-001
+      CANCELLATION_RATE: "0.12"
+      PRODUCER_LOOP: "true"
+      DATA_DIR: /data/raw
+    volumes:
+      - ./data:/data
+    networks:
+      - streaming-network
+
+  # -------------------------------------------------------------------------
+  # Payments producer
+  # Rates roughly track the orders producer: ~4.5 order events per order at
+  # 10 ev/s ≈ 2.2 orders/s; one payment event per order; 4 delivery events
+  # per order.
+  # -------------------------------------------------------------------------
+  payments-producer:
+    build:
+      context: ./producers
+    container_name: payments-producer
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: python payments_producer.py
+    environment:
+      <<: *common-env
+      EVENTS_PER_SECOND: "3"
+      PRODUCER_ID: payments-producer-001
+      PRODUCER_LOOP: "true"
+      DATA_DIR: /data/raw
+    volumes:
+      - ./data:/data
+    networks:
+      - streaming-network
+
+  # -------------------------------------------------------------------------
+  # Delivery producer
+  # -------------------------------------------------------------------------
+  delivery-producer:
+    build:
+      context: ./producers
+    container_name: delivery-producer
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: python delivery_producer.py
+    environment:
+      <<: *common-env
+      EVENTS_PER_SECOND: "10"
+      PRODUCER_ID: delivery-producer-001
+      PRODUCER_LOOP: "true"
+      DATA_DIR: /data/raw
+    volumes:
+      - ./data:/data
+    networks:
+      - streaming-network
+
+  # -------------------------------------------------------------------------
+  # order-status-service (Java, Kafka Streams): current state per order and
+  # business-rule alerts. GET http://localhost:8088/orders/{order_id}
+  # -------------------------------------------------------------------------
+  order-status-service:
+    build:
+      context: .
+      dockerfile: order-status-service/Dockerfile
+    container_name: order-status-service
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    ports:
+      - "8088:8080"
+    environment:
+      <<: *common-env
+      ADVERTISED_HOST: order-status-service
+      HTTP_PORT: "8080"
+      PAYMENT_TIMEOUT_MINUTES: "15"
+      JAVA_OPTS: "-Xmx512m"
+    volumes:
+      - order-status-state:/var/lib/kafka-streams
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8080 && printf 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q ' 200 ' <&3"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks:
+      - streaming-network
+
+  # -------------------------------------------------------------------------
+  # Spark pipeline (ingestion + enrichment + aggregation)
+  # Runs Spark in local[*] mode inside this container: a single-node demo does
+  # not need a standalone cluster, and the driver and executors share ./data.
+  # -------------------------------------------------------------------------
+  spark-pipeline:
+    build:
+      context: ./spark_jobs
+    container_name: spark-pipeline
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: python pipeline_runner.py
+    ports:
+      - "4040:4040"   # Spark UI of the driver
+    environment:
+      <<: *common-env
+      CHECKPOINT_LOCATION: /tmp/streaming-checkpoints
+      SPARK_LOG_LEVEL: WARN
+      BRONZE_PATH: /data/bronze/orders
+      SILVER_PATH: /data/silver/orders_enriched
+      GOLD_PATH: /data/gold/orders_agg
+      CUSTOMERS_PATH: /data/reference/customers
+      SPARK_ENV: local
+    volumes:
+      - spark-checkpoints:/tmp/streaming-checkpoints
+      - ./data:/data
+    networks:
+      - streaming-network
+
+  # -------------------------------------------------------------------------
+  # Streamlit dashboard
+  # -------------------------------------------------------------------------
+  dashboard:
+    build:
+      context: ./dashboard
+    container_name: dashboard
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      GOLD_PATH: /data/gold/orders_agg
+      SILVER_PATH: /data/silver/orders_enriched
+      BRONZE_PATH: /data/bronze/orders
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      DASHBOARD_PORT: "8501"
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks:
+      - streaming-network
+
+  # -------------------------------------------------------------------------
+  # Prometheus
+  # -------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks:
+      - streaming-network
+
+  # -------------------------------------------------------------------------
+  # Grafana
+  # -------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks:
+      - streaming-network
+
+networks:
+  streaming-network:
+    driver: bridge
+    name: streaming-network
+
+volumes:
+  zookeeper-data:
+  order-status-state:
+  zookeeper-log:
+  kafka-data:
+  spark-checkpoints:
+  grafana-data:
+  prometheus-data:

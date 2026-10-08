@@ -290,6 +290,74 @@ services:
       - streaming-network
 
   # -------------------------------------------------------------------------
+  # Kafka Connect (distributed mode, one worker) with the MongoDB sink.
+  # Keys are strings, values Avro via Schema Registry. The MongoDB URI is only
+  # an environment variable, read through EnvVarConfigProvider: connector
+  # configs say ${env:MONGO_SINK_URI} and the REST API never shows the secret.
+  # -------------------------------------------------------------------------
+  connect:
+    build:
+      context: ./connect
+    container_name: connect
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    ports:
+      - "8083:8083"
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: kafka:29092
+      CONNECT_REST_PORT: "8083"
+      CONNECT_REST_ADVERTISED_HOST_NAME: connect
+      CONNECT_GROUP_ID: olist-connect
+      CONNECT_CONFIG_STORAGE_TOPIC: _connect-configs
+      CONNECT_OFFSET_STORAGE_TOPIC: _connect-offsets
+      CONNECT_STATUS_STORAGE_TOPIC: _connect-status
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+      CONNECT_VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      CONNECT_CONFIG_PROVIDERS: env
+      CONNECT_CONFIG_PROVIDERS_ENV_CLASS: org.apache.kafka.common.config.provider.EnvVarConfigProvider
+      # Connectors may only resolve this one variable.
+      CONNECT_CONFIG_PROVIDERS_ENV_PARAM_ALLOWLIST_PATTERN: ^MONGO_SINK_URI$$
+      CONNECT_LOG4J_LOGGERS: org.reflections=ERROR
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
+      MONGO_SINK_URI: mongodb://connect:${MONGO_CONNECT_PASSWORD:?missing in .env, run scripts/gen_env.sh}@mongo:27017/olist_serving?authSource=admin
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8083/connectors"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+    networks:
+      - streaming-network
+
+  # -------------------------------------------------------------------------
+  # One-shot: registers connect/connectors/*.json (PUT, idempotent) and waits
+  # until every connector and task is RUNNING.
+  # -------------------------------------------------------------------------
+  connect-init:
+    image: curlimages/curl:8.10.1
+    container_name: connect-init
+    restart: "no"
+    depends_on:
+      connect:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    entrypoint: ["sh", "/register_connectors.sh"]
+    environment:
+      CONNECT_URL: http://connect:8083
+      CONNECTORS_DIR: /connectors
+    volumes:
+      - ./connect/register_connectors.sh:/register_connectors.sh:ro
+      - ./connect/connectors:/connectors:ro
+    networks:
+      - streaming-network
+
+  # -------------------------------------------------------------------------
   # Spark pipeline (ingestion + enrichment + aggregation)
   # Runs Spark in local[*] mode inside this container: a single-node demo does
   # not need a standalone cluster, and the driver and executors share ./data.

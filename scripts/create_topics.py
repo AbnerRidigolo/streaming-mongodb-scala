@@ -59,6 +59,10 @@ TOPIC_SPECS: list[tuple[str, int, int, dict[str, str]]] = [
         1,
         {"retention.ms": "604800000"},
     ),
+    # Dead-letter queues of the MongoDB sink connectors (Kafka Connect):
+    # records the sink could not convert or write, kept 7 days for inspection.
+    ("order-status-dlq", 1, 1, {"retention.ms": "604800000"}),
+    ("order-alerts-dlq", 1, 1, {"retention.ms": "604800000"}),
 ]
 
 

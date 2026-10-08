@@ -45,6 +45,8 @@ _CATEGORIES = [
     "eletronicos",
 ]
 _PAYMENT_TYPES = ["credit_card", "boleto", "voucher", "debit_card"]
+# Share of sample orders delivered after the estimated date.
+_LATE_RATE = 0.1
 
 KAGGLE_HINT = (
     "Raw Olist CSVs not found. Download them with:\n"
@@ -92,6 +94,21 @@ def generate_sample(data_dir: Path, n_customers: int, n_orders: int) -> None:
         oid = f"order_{i:06d}"
         cust = random.choice(customers)
         purchase = base_ts + timedelta(minutes=random.randint(0, 525600))
+        # Like Olist: the estimate is a date (midnight) 10-30 days out, and
+        # about 1 in 10 orders arrives after the estimated day.
+        estimated_days = random.randint(10, 30)
+        estimated = (purchase + timedelta(days=estimated_days)).replace(
+            hour=0, minute=0, second=0
+        )
+        if random.random() < _LATE_RATE:
+            delivered = estimated + timedelta(
+                days=random.randint(1, 10), hours=random.randint(0, 23)
+            )
+        else:
+            delivered = purchase + timedelta(
+                days=random.randint(2, estimated_days - 1),
+                hours=random.randint(0, 23),
+            )
         orders.append(
             {
                 "order_id": oid,
@@ -101,6 +118,12 @@ def generate_sample(data_dir: Path, n_customers: int, n_orders: int) -> None:
                 "order_approved_at": (
                     purchase + timedelta(minutes=random.randint(2, 30))
                 ).strftime("%Y-%m-%d %H:%M:%S"),
+                "order_delivered_customer_date": delivered.strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
+                "order_estimated_delivery_date": estimated.strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
             }
         )
         price = round(random.uniform(10, 600), 2)

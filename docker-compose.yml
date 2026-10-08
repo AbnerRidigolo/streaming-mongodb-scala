@@ -257,6 +257,39 @@ services:
       - streaming-network
 
   # -------------------------------------------------------------------------
+  # MongoDB: serving layer (database olist_serving). Passwords come from .env
+  # (scripts/gen_env.sh); compose refuses to start without them.
+  # mongo/init runs once, on an empty volume: users and indexes.
+  # -------------------------------------------------------------------------
+  mongo:
+    image: mongo:7.0.43
+    container_name: mongo
+    restart: unless-stopped
+    # Small WiredTiger cache: the demo data set is a few MB.
+    command: ["--wiredTigerCacheSizeGB", "0.25"]
+    # Host port 27018 by default: 27017 is often taken by a local MongoDB.
+    ports:
+      - "127.0.0.1:${MONGO_HOST_PORT:-27018}:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?missing in .env, run scripts/gen_env.sh}
+      MONGO_CONNECT_PASSWORD: ${MONGO_CONNECT_PASSWORD:?missing in .env, run scripts/gen_env.sh}
+      MONGO_DASHBOARD_PASSWORD: ${MONGO_DASHBOARD_PASSWORD:?missing in .env, run scripts/gen_env.sh}
+      MONGO_SPARK_PASSWORD: ${MONGO_SPARK_PASSWORD:?missing in .env, run scripts/gen_env.sh}
+    volumes:
+      - mongo-data:/data/db
+      - ./mongo/init:/docker-entrypoint-initdb.d:ro
+    # Logging in as the connect user only works once the init script has run
+    # (the entrypoint's temporary init mongod also answers a bare ping).
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet \"mongodb://connect:$${MONGO_CONNECT_PASSWORD}@localhost:27017/olist_serving?authSource=admin\" --eval 'db.runCommand({ping: 1}).ok' | grep -q 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+    networks:
+      - streaming-network
+
+  # -------------------------------------------------------------------------
   # Spark pipeline (ingestion + enrichment + aggregation)
   # Runs Spark in local[*] mode inside this container: a single-node demo does
   # not need a standalone cluster, and the driver and executors share ./data.
@@ -368,6 +401,7 @@ networks:
 volumes:
   zookeeper-data:
   order-status-state:
+  mongo-data:
   zookeeper-log:
   kafka-data:
   spark-checkpoints:

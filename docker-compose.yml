@@ -389,6 +389,42 @@ services:
       - streaming-network
 
   # -------------------------------------------------------------------------
+  # delivery-sla-job (Scala, Spark Structured Streaming): delivery timeline per
+  # order with flatMapGroupsWithState, SLA against the estimated date.
+  # Writes olist_serving.delivery_timeline / delivery_sla (user spark) and the
+  # Delta table /data/gold/delivery_timeline. Spark UI on :4041.
+  # -------------------------------------------------------------------------
+  delivery-sla-job:
+    build:
+      context: ./delivery-sla-job
+    container_name: delivery-sla-job
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      mongo:
+        condition: service_healthy
+    ports:
+      - "4041:4040"
+    environment:
+      <<: *common-env
+      TOPIC_ORDERS_RAW: orders-raw
+      TOPIC_DELIVERY: delivery-events
+      MONGO_SPARK_URI: mongodb://spark:${MONGO_SPARK_PASSWORD:?missing in .env, run scripts/gen_env.sh}@mongo:27017/olist_serving?authSource=admin
+      MONGO_DB: olist_serving
+      GOLD_TIMELINE_PATH: /data/gold/delivery_timeline
+      CHECKPOINT_LOCATION: /checkpoints/delivery-sla
+      TRIGGER_SECONDS: "10"
+      STATE_TTL: "1 hour"
+      SPARK_DRIVER_MEMORY: 1g
+      SPARK_CORES: "2"
+    volumes:
+      - delivery-sla-checkpoints:/checkpoints
+      - ./data:/data
+    networks:
+      - streaming-network
+
+  # -------------------------------------------------------------------------
   # Streamlit dashboard
   # -------------------------------------------------------------------------
   dashboard:
@@ -476,5 +512,6 @@ volumes:
   zookeeper-log:
   kafka-data:
   spark-checkpoints:
+  delivery-sla-checkpoints:
   grafana-data:
   prometheus-data:

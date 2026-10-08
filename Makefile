@@ -12,7 +12,7 @@ INFRA_SERVICES := zookeeper kafka schema-registry kafka-ui prometheus grafana
 
 .DEFAULT_GOAL := help
 .PHONY: help setup up down up-all logs-kafka logs-spark logs-producer \
-        topics schemas produce pipeline dashboard check seed \
+        env topics schemas produce pipeline dashboard check seed \
         test-unit test-integration test-e2e test lint format clean reset
 
 help: ## Show this help
@@ -36,7 +36,10 @@ up: ## Start core infra only (zookeeper, kafka, schema-registry, monitoring)
 down: ## Stop all containers
 	$(COMPOSE) down
 
-up-all: ## Start everything (infra + init + producers + pipeline + dashboard)
+env: ## Create/complete .env with random MongoDB passwords (never printed)
+	scripts/gen_env.sh
+
+up-all: env ## Start everything (infra + init + producers + pipeline + MongoDB + Connect + dashboard)
 	$(COMPOSE) up -d --build
 
 # -----------------------------------------------------------------------------

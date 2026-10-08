@@ -18,6 +18,7 @@ RUN pip install --no-cache-dir \
     "pyarrow==14.0.2" \
     "altair==5.2.0" \
     "confluent-kafka==2.3.0" \
+    "pymongo==4.6.3" \
     "structlog==23.2.0"
 
 COPY . /app

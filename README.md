@@ -1,123 +1,246 @@
 # ⚡ Real-time Streaming Pipeline — Olist
 
+[![CI](https://github.com/AbnerRidigolo/streaming-mongodb-scala/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/AbnerRidigolo/streaming-mongodb-scala/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11-blue)](#)
+[![Java](https://img.shields.io/badge/Java-17-007396)](#)
+[![Scala](https://img.shields.io/badge/Scala-2.12-DC322F?logo=scala)](#)
 [![Confluent Platform](https://img.shields.io/badge/Confluent%20Platform-7.5%20(Kafka%203.5)-231F20?logo=apachekafka)](#)
 [![Spark](https://img.shields.io/badge/Spark-3.4-E25A1C?logo=apachespark)](#)
 [![Delta Lake](https://img.shields.io/badge/Delta%20Lake-2.4-00ADD8)](#)
+[![MongoDB](https://img.shields.io/badge/MongoDB-7.0-47A248?logo=mongodb)](#)
 
-Pipeline de streaming **exactly-once** que reproduz o ciclo de vida de pedidos do
-dataset público [Brazilian E-Commerce (Olist)](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce),
-ingere os eventos via **Kafka + Avro/Schema Registry**, processa com **Spark
-Structured Streaming** em uma arquitetura **Medallion (Bronze → Silver → Gold)**
-sobre **Delta Lake**, e expõe um **dashboard ao vivo (Streamlit)** com métricas
-de negócio atualizadas a cada 5 segundos. Observabilidade completa com
-**Prometheus + Grafana**.
+Pipeline de streaming que reproduz o ciclo de vida de pedidos do dataset público
+[Brazilian E-Commerce (Olist)](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce)
+em **Kafka** (Avro + Schema Registry) e o processa por três caminhos:
+
+- **Spark Structured Streaming em Python**: medalhão Bronze → Silver → Gold em
+  **Delta Lake**, com um painel **Streamlit** de métricas por janela.
+- **Kafka Streams em Java** (`order-status-service`): estado atual de cada pedido e
+  alertas de regra de negócio, levados ao **MongoDB** por um **Kafka Connect** sink.
+- **Spark Structured Streaming em Scala** (`delivery-sla-job`): linha do tempo de
+  entrega por pedido e SLA contra a data prometida, gravados no **MongoDB** e no Delta.
+
+Tudo roda localmente com Docker. **Prometheus + Grafana** acompanham produtores,
+Spark e o serviço Java.
 
 ---
 
 ## 📐 Arquitetura
 
 ```
-                       ┌──────────────────────────────────────────────────┐
-                       │                   PRODUCERS                       │
-                       │  orders_producer   payments_producer   delivery   │
-                       │  (Olist CSV replay → Avro + Schema Registry)      │
-                       └───────────────┬──────────────────────────────────┘
-                                       │  acks=all · idempotence · lz4
-                                       ▼
-        ┌──────────────────────────────────────────────────────────────────┐
-        │                         APACHE KAFKA 7.5                           │
-        │  orders-raw(3)   payments-raw(3)   delivery-events(2)   ...        │
-        │            ▲ Confluent Schema Registry (Avro)                      │
-        └───────────────┬──────────────────────────────────────────────────┘
-                        │ maxOffsetsPerTrigger=10000 · failOnDataLoss=false
-                        ▼
-   ┌──────────────────────────────────────────────────────────────────────────┐
-   │                     SPARK 3.4 STRUCTURED STREAMING                         │
-   │                                                                            │
-   │  ingestion_job   ──►  enrichment_job   ──►   aggregation_job              │
-   │  (Kafka→Bronze)       (Bronze→Silver)        (Silver→Gold, 2 janelas)      │
-   │  MERGE by event_id    watermark 10min        window 1m/30s + 5m/1m         │
-   │                       stream-static join     foreachBatch + MERGE          │
-   └───────────────┬──────────────┬───────────────────────┬────────────────────┘
-                   ▼              ▼                        ▼
-            ┌────────────┐ ┌────────────┐          ┌────────────┐
-            │  BRONZE    │ │   SILVER   │          │    GOLD     │   DELTA LAKE 2.4
-            │ orders     │ │ enriched   │          │ orders_agg  │   (ACID, time-travel)
-            └────────────┘ └────────────┘          └─────┬───────┘
-                                                         ▼
-                                            ┌──────────────────────────┐
-                                            │   STREAMLIT DASHBOARD     │  ⟳ 5s
-                                            │  KPIs · charts · tabela   │
-                                            └──────────────────────────┘
+                  Olist CSV (dataset real ou amostra sintética), replay em loop
+        ┌──────────────────────────────┼──────────────────────────────┐
+  orders_producer              payments_producer              delivery_producer     Python · Avro
+        ▼                              ▼                              ▼             + Schema Registry
+  orders-raw (3 part.)          payments-raw (3)              delivery-events (2)   Kafka 3.5 (CP 7.5)
+        │                              │                              │
+        ├─────────────────────┐        │                              │
+        ▼                     │        │                              │
+ ┌──────────────────────┐     │        │                              │
+ │ spark-pipeline (Py)  │     ▼        ▼                              ▼
+ │ Bronze → Silver →    │   ┌──────────────────────────────────────────────────┐
+ │ Gold (Delta Lake)    │   │ order-status-service (Java, Kafka Streams)        │
+ └──────────┬───────────┘   │ cogroup por order_id → KTable · exactly_once_v2   │
+            ▼               │ GET /orders/{id} (interactive query)              │
+   Streamlit: painel        └──────────────┬──────────────────────┬────────────┘
+   principal (Gold)                        ▼                      ▼
+                                 order-status (compactado)   order-alerts
+                                           └──────────┬───────────┘
+                                                      ▼
+                                   Kafka Connect · MongoDB Sink (upsert por chave, DLQ)
+                                                      │
+ orders-raw + delivery-events                         ▼
+        │                          ┌───────────────── MongoDB 7.0 · olist_serving ─────────────────┐
+        ▼                          │ order_status · order_alerts   (caminho Kafka Streams + Connect)│
+ ┌──────────────────────────┐      │ delivery_timeline · delivery_sla   (caminho Scala)             │
+ │ delivery-sla-job (Scala) │ ───► └──────────────────────────────┬─────────────────────────────────┘
+ │ flatMapGroupsWithState   │ ───► Delta gold                     ▼
+ └──────────────────────────┘      delivery_timeline     Streamlit: "Consulta de pedido"
+                                                          (usuário só-leitura)
 
-   PROMETHEUS  ◄── métricas (produtores + Spark streaming) ──►  GRAFANA
+ Prometheus ◄── produtores · Spark (Python) · order-status-service ──► Grafana
 ```
 
----
+### Componentes
 
-## 🔒 Garantias do pipeline
-
-| Garantia | Como é implementada | Onde no código |
-|---|---|---|
-| **Exactly-once (na lakehouse)** | Checkpoint do Structured Streaming **+** `MERGE` Delta idempotente por `event_id`. Reprocessar offsets nunca duplica linhas. | [`ingestion_job.py`](spark_jobs/ingestion_job.py) (`_write_batch` → `upsert_delta`), [`delta_utils.py`](spark_jobs/utils/delta_utils.py#L44) (`whenMatchedUpdateAll`/`whenNotMatchedInsertAll`) |
-| **Produção idempotente** | Producer com `enable.idempotence=True` + `acks=all` + `retries=5`. | [`base_producer.py`](producers/base_producer.py#L118) (`PRODUCER_CONFIG`) |
-| **Watermark / late data** | `withWatermark("event_ts", "10 minutes")` antes das agregações em janela — eventos atrasados além do limite são descartados, o estado é limitado. | [`enrichment_job.py`](spark_jobs/enrichment_job.py) e [`aggregation_job.py`](spark_jobs/aggregation_job.py) (`WATERMARK_DELAY`) |
-| **Backpressure** | `maxOffsetsPerTrigger=10000` (Kafka) e `maxFilesPerTrigger=10` (Delta) limitam o volume por micro-batch, evitando OOM sob carga. | [`ingestion_job.py`](spark_jobs/ingestion_job.py) (`.option("maxOffsetsPerTrigger", ...)`), [`enrichment_job.py`](spark_jobs/enrichment_job.py) (`.option("maxFilesPerTrigger", ...)`) |
-| **Stream-static join eficiente** | Dimensão de clientes lida uma vez, `dropDuplicates` + `broadcast` hint. | [`enrichment_job.py`](spark_jobs/enrichment_job.py) (`enrich` → `F.broadcast`) |
+| Componente | Tecnologia | Papel | Detalhes |
+|---|---|---|---|
+| Produtores | Python 3.11, confluent-kafka, Avro | Reproduzem os CSVs da Olist em três tópicos, cada um no seu ritmo | [`producers/`](producers/) |
+| `init` | Python (one-shot) | Cria tópicos, registra schemas, gera a amostra sintética se não houver CSVs | [`scripts/`](scripts/) |
+| `spark-pipeline` | PySpark 3.4, Delta 2.4 | Medalhão Bronze → Silver → Gold com janelas | [jobs Python](#-como-funciona-cada-job) |
+| `dashboard` | Streamlit | Painel do Gold e página de consulta de pedido no MongoDB | [`dashboard/`](dashboard/) |
+| `order-status-service` | Java 17, Kafka Streams 3.5 | Estado atual por pedido e alertas, API HTTP | [seção](#-order-status-service--kafka-streams-java) |
+| `connect` + `connect-init` | Kafka Connect, MongoDB Sink 3.1.2 | Leva `order-status` e `order-alerts` ao MongoDB | [seção](#-camada-de-serviço--mongodb-via-kafka-connect) |
+| `mongo` | MongoDB 7.0 | Camada de serviço (`olist_serving`), usuários de menor privilégio | [seção](#-camada-de-serviço--mongodb-via-kafka-connect) |
+| `delivery-sla-job` | Scala 2.12, Spark 3.4, MongoDB Spark Connector 10.4 | Linha do tempo de entrega e SLA por UF/região | [seção](#-delivery-sla-job--linha-do-tempo-de-entrega-e-sla-scala) |
+| Prometheus + Grafana | | Métricas de produtores, Spark e serviço Java | [seção](#-monitoramento) |
 
 ---
 
 ## 🚀 Como rodar
 
-Só precisa de Docker (com ≥ 10 GB de RAM; a stack completa usa ~8 GiB, ver
-[consumo medido](#consumo-de-memória-medido)) e Git
-(no Windows, rode os scripts `.sh` pelo Git Bash); funciona igual no Windows,
-macOS e Linux.
+Só precisa de Docker (com 10 GB ou mais de RAM para ele; a stack completa usa
+~8 GiB, ver [consumo medido](#consumo-de-memória-medido)) e Git. No Windows, rode os
+scripts `.sh` pelo Git Bash. Funciona igual no Windows, macOS e Linux.
 
 ```bash
-git clone <seu-fork> && cd streaming-mongodb-scala
-scripts/gen_env.sh          # só na primeira vez: senhas do MongoDB no .env
-docker compose up -d --build
+git clone https://github.com/AbnerRidigolo/streaming-mongodb-scala.git
+cd streaming-mongodb-scala
+scripts/up.sh             # gera o .env se faltar e sobe tudo (docker compose up -d --build)
+scripts/smoke_e2e.sh      # opcional: confere os dois caminhos até o MongoDB
 ```
 
-O MongoDB exige senhas, e elas não ficam no repositório: `scripts/gen_env.sh`
-cria (ou completa) o `.env`, ignorado pelo git, com senhas aleatórias e nunca as
-imprime. Sem elas o compose para com
-`required variable MONGO_ROOT_PASSWORD is missing a value: missing in .env, run scripts/gen_env.sh`.
-Por isso, no primeiro uso, são dois comandos e não um.
+O MongoDB exige senhas, e elas não ficam no repositório: `scripts/up.sh` chama
+`scripts/gen_env.sh`, que cria (ou completa) o `.env`, ignorado pelo git, com senhas
+aleatórias e nunca as imprime. Quem preferir o compose direto roda
+`scripts/gen_env.sh` uma vez e depois `docker compose up -d --build`; sem o `.env`, o
+compose para com `required variable MONGO_ROOT_PASSWORD is missing a value: missing in .env, run scripts/gen_env.sh`.
+Com `make`, `make up-all` faz o mesmo que `scripts/up.sh`.
 
 O serviço `init` roda uma vez antes de produtores e pipeline: cria os tópicos,
-registra os schemas Avro e prepara os dados. Se `data/raw/` tiver os CSVs reais
-da Olist (ver seção abaixo), eles são usados; senão, gera uma amostra sintética.
-O dashboard fica em http://localhost:8501 assim que o Gold tiver dados.
+registra os schemas Avro e prepara os dados. Se `data/raw/` tiver os CSVs reais da
+Olist (ver [seção abaixo](#-como-baixar-o-dataset-olist)), eles são usados; senão,
+gera uma amostra sintética de 10.000 pedidos. Os primeiros dados aparecem no
+MongoDB em cerca de um minuto e no painel principal depois que o Gold é escrito.
 
-Com `make` disponível, `make up-all` gera o `.env` se faltar e sobe tudo;
-`make help` lista os atalhos.
+**Verificação ponta a ponta.** `scripts/smoke_e2e.sh` (o mesmo do CI) sobe a parte
+da stack que escreve no MongoDB e confere os dois caminhos: o pedido `order_000000`
+com o mesmo status na API do Kafka Streams e no MongoDB, alertas em `order_alerts`,
+DLQs sem registros novos, o usuário do painel sem permissão de escrita, e a linha do
+tempo de entrega do mesmo pedido, com data estimada e SLA, vinda do job Scala. Num
+ambiente limpo levou 1 min 30 s aqui.
 
 > **Windows, clone feito antes do `.gitattributes`:** se o build falhar com
 > `./gradlew: not found`, os arquivos foram extraídos com CRLF (padrão do Git for
 > Windows). Com a árvore limpa, rode `git rm -r --cached . && git reset --hard`
 > para extraí-los de novo com LF.
 
-> Dica para gravação de vídeo (LinkedIn): o produtor já roda com `PRODUCER_LOOP=true`,
-> reiniciando o CSV ao chegar no fim — os contadores sobem continuamente.
-
 ### Portas
 
 | Serviço | URL |
 |---|---|
-| Streamlit Dashboard | http://localhost:8501 |
-| Kafka UI | http://localhost:8080 |
-| Spark UI (driver do pipeline) | http://localhost:4040 |
+| Painel Streamlit | http://localhost:8501 |
+| Consulta de pedido (MongoDB) | http://localhost:8501/Consulta_de_pedido |
+| order-status-service (Kafka Streams) | http://localhost:8088/orders/{order_id} |
+| Kafka Connect (REST) | http://localhost:8083/connectors?expand=status |
 | Grafana | http://localhost:3000 (`admin` / `admin`) |
 | Prometheus | http://localhost:9090 |
+| Kafka UI | http://localhost:8080 |
 | Schema Registry | http://localhost:8081 |
-| order-status-service (Kafka Streams) | http://localhost:8088/orders/{order_id} |
-| Consulta de pedido (MongoDB) | http://localhost:8501/Consulta_de_pedido |
-| Kafka Connect (REST) | http://localhost:8083/connectors?expand=status |
+| Spark UI (pipeline Python) | http://localhost:4040 |
 | Spark UI (delivery-sla-job, Scala) | http://localhost:4041 |
 | MongoDB | `mongodb://localhost:27018` (só em 127.0.0.1; porta em `MONGO_HOST_PORT`) |
+
+---
+
+## 📸 O que se vê rodando
+
+Capturas de 2026-10-09, numa stack recém-criada (`docker compose down -v`) com a
+amostra sintética. As telas foram tiradas por um Chromium headless na rede do
+compose; os textos são saídas do `scripts/smoke_e2e.sh` da mesma execução.
+
+**API do `order-status-service`** (`GET /orders/order_000000`, interactive query na store do Kafka Streams):
+
+![GET /orders/order_000000](docs/img/api-order-status.png)
+
+**MongoDB, caminho Kafka Streams + Connect e caminho Scala.** O mesmo pedido em
+`delivery_timeline` e o SLA por região em `delivery_sla`:
+
+```js
+// db.delivery_timeline.findOne({_id: 'order_000000'})
+{
+  _id: 'order_000000', order_id: 'order_000000', customer_state: 'SP', region: 'Sudeste',
+  delivery_status: 'DELIVERED', sla_status: 'ON_TIME',
+  delay_days: -5.11, promised_days: 15.74, actual_days: 10.63,
+  purchase_ts: ISODate('2024-03-13T06:20:00.000Z'),
+  estimated_delivery_ts: ISODate('2024-03-29T00:00:00.000Z'),
+  delivered_customer_ts: ISODate('2024-03-23T21:20:00.000Z'),
+  created_at: ISODate('2026-10-09T00:51:37.000Z'), shipped_at: ISODate('2026-10-09T00:51:36.959Z'),
+  in_transit_at: ISODate('2026-10-09T00:51:37.069Z'), out_for_delivery_at: ISODate('2026-10-09T00:51:37.169Z'),
+  delivered_at: ISODate('2026-10-09T00:51:37.270Z'), canceled_at: null,
+  last_carrier_status: 'DELIVERED', ...
+}
+```
+
+```
+== MongoDB olist_serving.delivery_sla (country and regions)   (início do stream)
+all:BR delivered: 78 late: 4 on_time_rate: 0.9487 avg_delay_days_when_late: 6.75
+region:Centro-Oeste delivered: 15 late: 2 on_time_rate: 0.8667 avg_delay_days_when_late: 7.13
+region:Nordeste delivered: 16 late: 1 on_time_rate: 0.9375 avg_delay_days_when_late: 7.88
+region:Sudeste delivered: 26 late: 1 on_time_rate: 0.9615 avg_delay_days_when_late: 4.88
+region:Sul delivered: 21 late: 0 on_time_rate: 1 avg_delay_days_when_late: null
+PASS: path 1 (Kafka Streams + Connect): order_000000 is DELIVERED in the API and in MongoDB; path 2 (Scala job): its delivery SLA is ON_TIME
+```
+
+Com os 10.000 pedidos da amostra processados, numa execução anterior, o SLA do
+país ficou em 89,96% no prazo (8.754 entregues), coerente com os ~10% de atraso
+que o gerador da amostra sorteia.
+
+**Página "Consulta de pedido"** (lê `order_status` e `order_alerts` no MongoDB com o usuário só-leitura):
+
+![Consulta de pedido](docs/img/dashboard-consulta-pedido.png)
+
+**Painel principal** (Gold do pipeline Python):
+
+![Painel principal](docs/img/dashboard-principal.png)
+
+**Grafana** (produtores, ingestão do Spark e `order-status-service`; o painel de
+erro fica vazio porque nenhum envio falhou e a série de erro não existe):
+
+![Grafana](docs/img/grafana.png)
+
+---
+
+## 🔒 Garantias e decisões
+
+| Garantia / decisão | Como é feita | Onde |
+|---|---|---|
+| **Bronze sem duplicatas** | Checkpoint do Structured Streaming + `MERGE` Delta por `event_id`: reprocessar offsets não duplica linhas (efeito exactly-once na Bronze). | [`ingestion_job.py`](spark_jobs/ingestion_job.py), [`delta_utils.py`](spark_jobs/utils/delta_utils.py) |
+| **Produção idempotente** | `enable.idempotence=True` + `acks=all` + `retries=5`. | [`base_producer.py`](producers/base_producer.py) (`PRODUCER_CONFIG`) |
+| **Estado do pedido exactly-once até o tópico** | Kafka Streams com `exactly_once_v2`: offsets, changelogs e saídas na mesma transação. | [`order-status-service`](#-order-status-service--kafka-streams-java) |
+| **MongoDB sem transação distribuída** | Os dois caminhos entregam *at-least-once* e gravam por upsert de chave (`order_id`, `alert_id`, `scope:key`): repetir um registro ou um micro-batch dá o mesmo documento. | [Connect](#-camada-de-serviço--mongodb-via-kafka-connect), [Scala](#-delivery-sla-job--linha-do-tempo-de-entrega-e-sla-scala) |
+| **Falha do MongoDB não perde dado** | O sink para (`mongo.errors.tolerance=none`) sem confirmar offsets e `connect-init` reinicia as tarefas; o job Scala falha o micro-batch, o contêiner reinicia e retoma do checkpoint. Testado parando o MongoDB por um minuto. | [Connect](#-camada-de-serviço--mongodb-via-kafka-connect) |
+| **Registro ilegível não para o fluxo** | Kafka Streams loga e segue; o Connect manda à DLQ (`errors.tolerance=all`); o job Scala loga e descarta. | seções de cada componente |
+| **Eventos fora de ordem e repetidos** | Watermark de 10 min nas janelas do Spark Python; estado comutativo por pedido no Kafka Streams e no job Scala (menor timestamp por marco), testado com todas as 120 ordens de chegada de 5 eventos. | seções de cada componente |
+| **Particionamento** | Os produtores usam o CRC32 do librdkafka e os tópicos têm 3 e 2 partições: o Kafka Streams reparticiona, o job Scala agrupa por `order_id` (shuffle do Spark). Nenhum dos dois depende de co-particionamento. | seções de cada componente |
+| **Volume por micro-batch limitado** | `maxOffsetsPerTrigger=10000` (Kafka) e `maxFilesPerTrigger=10` (Delta). | [`ingestion_job.py`](spark_jobs/ingestion_job.py), [`enrichment_job.py`](spark_jobs/enrichment_job.py) |
+| **Segredos fora do git** | Senhas só no `.env` gerado; a URI do sink só como variável do worker (`EnvVarConfigProvider` com allowlist); usuários do MongoDB por papel (`connect`, `dashboard` só-leitura, `spark`). | [seção MongoDB](#-camada-de-serviço--mongodb-via-kafka-connect) |
+| **Schema evolution** | Campos novos opcionais com `default` (compatível BACKWARD) e acrescentados no fim do record, porque o job Python lê com schema fixo; o job Scala lê com o schema do escritor. | [seção Scala](#-delivery-sla-job--linha-do-tempo-de-entrega-e-sla-scala) |
+
+---
+
+## ⚠️ Limitações
+
+O que não foi feito ou não funciona como se esperaria de produção. Cada seção
+abaixo detalha as suas.
+
+- **Dados simulados no tempo.** Os três produtores percorrem os CSVs em ritmos
+  independentes e carimbam os eventos na emissão: os horários entre fontes não são
+  coerentes (entrega pode vir antes da criação) e um ciclo de pedido dura segundos.
+  Por isso o SLA usa as datas de negócio da Olist, não os horários dos eventos.
+- **Replay reusa `order_id`.** O Kafka Streams guarda o estado para sempre e o job
+  Scala tira do estado pedidos parados há 1 h. Um pedido cancelado numa passada
+  antiga continua `CANCELED` no caminho Kafka Streams e pode aparecer entregue no
+  caminho Scala; os dois caminhos podem divergir sobre o mesmo pedido.
+- **Um nó de cada coisa.** Kafka, Connect, MongoDB e Spark (`local[*]`) sem réplica:
+  é um ambiente de demonstração, sem alta disponibilidade.
+- **Memória.** A stack completa soma ~8 GiB. Na máquina de desenvolvimento
+  (Windows, 32 GB, com outros apps abertos) o Docker Desktop caiu algumas vezes por
+  memória comprometida no limite; a stack inteira de uma vez não foi medida.
+- **Observabilidade parcial.** MongoDB, Kafka Connect e o job Scala não exportam
+  métricas para o Prometheus/Grafana.
+- **CI.** Roda lint e testes de Python, Java e Scala, constrói todas as imagens e o
+  teste ponta a ponta dos dois caminhos até o MongoDB. O pipeline Python e os
+  painéis não entram no teste ponta a ponta (só nos testes deles). As imagens Docker
+  não usam cache entre execuções do CI.
+- **Dataset real não testado nestas fases.** MongoDB, Connect e o job Scala foram
+  verificados só com a amostra sintética; o dataset da Kaggle não foi baixado (sem
+  credenciais da Kaggle no ambiente de desenvolvimento).
+- **Dois "SLA" diferentes.** O `delivery_sla_tier` do enrichment Python (SP = D+3,
+  RJ/MG/ES = D+5, demais = D+8) é uma regra fixa, não vem dos dados; o SLA do job
+  Scala compara a entrega real com a data estimada da Olist.
+- **Nuvem.** Nada roda fora do Docker local ainda (a fase com Azure é opcional e não
+  foi feita).
 
 ---
 
@@ -255,7 +378,7 @@ do pedido responde `307` apontando para a dona (via `application.server`).
 **Testes:** `order-status-service/src/test` usa `TopologyTestDriver` com Schema
 Registry em memória (`mock://`), sem broker: ciclo de vida, todas as permutações
 de chegada, deduplicação, replay, as duas regras (casos positivos e negativos) e a
-consulta à store. `scripts/smoke_order_status.sh` sobe a stack real e consulta o
+consulta à store. `scripts/smoke_e2e.sh` sobe a stack real e consulta o
 serviço; roda no CI. Build e testes: `cd order-status-service && ./gradlew test`
 (ou só pelo CI/Docker; não precisa de Java instalado para rodar o pipeline).
 
@@ -305,7 +428,8 @@ order-alerts ─┘   MongoDB Sink (3 tasks    └─► olist_serving.order_ale
 | Configuração | Por quê |
 |---|---|
 | `PartialValueStrategy` (`order_id` / `alert_id`) + `ReplaceOneBusinessKeyStrategy` | Upsert pela chave de negócio: o documento do pedido é substituído pelo estado mais novo. O `_id` continua um `ObjectId`; a unicidade é do índice único em `order_id` (`alert_id` nos alertas). |
-| `errors.tolerance=all` + DLQ | Um registro que não converte ou não grava vai para `order-status-dlq` / `order-alerts-dlq` com o erro nos headers, e o conector segue. O teste de fumaça falha se alguma DLQ tiver registros, então a tolerância não esconde erro. |
+| `errors.tolerance=all` + DLQ | Um registro que não converte (Avro ilegível) vai para `order-status-dlq` / `order-alerts-dlq` com o erro nos headers, e o conector segue. O teste ponta a ponta falha se uma DLQ ganhar registros durante a execução, então a tolerância não esconde erro. |
+| `mongo.errors.tolerance=none` | Erro ao **gravar** no MongoDB (banco reiniciando, rede) para a tarefa em `FAILED` sem confirmar offsets, em vez de mandar o registro à DLQ. Um mongod sem réplica não tem retryable writes e o conector não tem retentativa própria; com `all`, uma queda do MongoDB mandou 3 atualizações reais à DLQ durante o desenvolvimento. Recuperação: `docker compose up connect-init` reinicia as tarefas `FAILED` e elas continuam do último offset confirmado (testado parando o MongoDB por um minuto). |
 | `connection.uri=${env:MONGO_SINK_URI}` | A URI com senha só existe como variável de ambiente do worker, lida pelo `EnvVarConfigProvider`. O JSON e a API REST (`GET /connectors/.../config`) mostram só o placeholder, e `config.providers.env.param.allowlist.pattern=^MONGO_SINK_URI$` impede um conector de ler qualquer outra variável. |
 | `tasks.max=3` | Uma tarefa por partição de `order-status`. Como o tópico é chaveado por `order_id`, todas as versões de um pedido passam pela mesma tarefa, em ordem: a última escrita é o estado mais novo. |
 
@@ -380,11 +504,12 @@ com o mesmo status que `GET /orders/order_000000` retornou):
 
 **Testes:** `tests/unit/test_order_lookup.py` (busca, linha do tempo, pagamentos,
 alertas, filtro/ordem/limite) com uma coleção falsa; a página foi exercitada com
-o `AppTest` do Streamlit contra o MongoDB real. `scripts/smoke_order_status.sh`
+o `AppTest` do Streamlit contra o MongoDB real. `scripts/smoke_e2e.sh`
 (no CI) sobe Kafka, produtores, serviço, MongoDB e Connect e confere:
 conectores `RUNNING`, `order_000000` com o mesmo status na API e no MongoDB
 (com nova tentativa, porque os produtores seguem rodando), alertas em
-`order_alerts`, DLQs vazias e o usuário `dashboard` sem permissão de escrita.
+`order_alerts`, nenhum registro novo nas DLQs, tarefas ainda `RUNNING` no fim e o
+usuário `dashboard` sem permissão de escrita.
 As senhas do CI são geradas na hora por `scripts/gen_env.sh`.
 
 **Limitações conhecidas**
@@ -402,7 +527,7 @@ As senhas do CI são geradas na hora por `scripts/gen_env.sh`.
 
 ---
 
-## ⏱️ `delivery-sla-job` — linha do tempo de entrega e SLA (Scala)
+## 🚚 `delivery-sla-job` — linha do tempo de entrega e SLA (Scala)
 
 **Papel no pipeline:** o `order-status-service` diz em que pé está o pedido; este
 job responde "a entrega cumpriu o prazo prometido?" e "qual o SLA por estado e
@@ -495,9 +620,11 @@ corrompido). Rodar: `cd delivery-sla-job && sbt test`, ou via Docker:
   `processAllAvailable()` nunca veria o stream parado. O TTL é testado com
   `TestGroupState`; a expiração dentro de uma query rodando não tem teste automatizado.
 - O SLA é recalculado lendo toda a tabela gold a cada micro-batch: simples e
-  correto para dezenas de milhares de pedidos, mas não escala sem agregação incremental.
-- O CI roda os testes Scala e constrói a imagem, mas o teste de fumaça ainda não
-  sobe este job (planejado para a fase 4); ele foi verificado à mão com a stack.
+  funcionou com os 10.000 pedidos da amostra; volumes maiores pediriam agregação
+  incremental (não medido).
+- Uma queda do MongoDB faz o micro-batch falhar e a query parar; quem a retoma é o
+  `restart: unless-stopped` do contêiner, a partir do checkpoint (visto ao parar o
+  MongoDB por um minuto). Não há retentativa dentro do job.
 
 ---
 
@@ -546,18 +673,13 @@ Grafana provisiona automaticamente o datasource Prometheus e o dashboard
 | order-status-service: alertas | `sum by (type) (increase(order_status_alerts_total[5m]))` |
 | Total produzido | `sum(kafka_messages_produced_total{status="success"})` |
 
-```
-┌───────────────────────────┐  ┌───────────────────────────┐
-│  Throughput (msgs/s)       │  │  Error rate (msgs/s)       │
-│  [screenshot placeholder]  │  │  [screenshot placeholder]  │
-└───────────────────────────┘  └───────────────────────────┘
-┌───────────────────────────┐  ┌───────────────────────────┐
-│  Spark ingestion (rows/s)  │  │  Total messages produced   │
-│  [screenshot placeholder]  │  │  [screenshot placeholder]  │
-└───────────────────────────┘  └───────────────────────────┘
-```
+![Grafana](docs/img/grafana.png)
 
-> Substitua os placeholders por capturas reais de `http://localhost:3000` após `make up-all`.
+Até 2026-10-09 todos os painéis mostravam "No data": o dashboard procura o
+datasource pelo uid `prometheus` e o provisionamento não definia uid. Corrigido em
+`monitoring/grafana/provisioning/datasources/prometheus.yml`. MongoDB, Kafka
+Connect e o job Scala ainda não têm métricas aqui.
+
 
 ---
 
@@ -572,7 +694,7 @@ Reduza o volume por micro-batch:
 # ingestion_job.py
 .option("maxOffsetsPerTrigger", "1000")   # de 10000
 ```
-Garanta ≥ 8 GB (idealmente 12 GB) disponíveis ao Docker.
+Dê 10 GB ou mais ao Docker (ver [consumo medido](#consumo-de-memória-medido)).
 </details>
 
 <details>
@@ -600,11 +722,17 @@ manter compatibilidade BACKWARD. Para forçar uma nova versão compatível, ajus
 <summary><b>4. Checkpoint corrompido (query não reinicia)</b></summary>
 
 Sintoma: `Cannot find checkpoint` ou inconsistência de offsets após mudar o schema da
-query. Limpe apenas o checkpoint do job afetado:
+query. Os checkpoints do pipeline Python ficam no volume `spark-checkpoints`
+(`ingestion`, `enrichment`, `aggregation`, `aggregation_rate`). Limpe só o do job
+afetado e reinicie:
 ```bash
-rm -rf /tmp/streaming-checkpoints/ingestion   # ou enrichment / aggregation
+# No Git Bash, MSYS_NO_PATHCONV=1 impede que /tmp vire um caminho do Windows.
+MSYS_NO_PATHCONV=1 docker compose exec spark-pipeline rm -rf /tmp/streaming-checkpoints/ingestion
+docker compose restart spark-pipeline
 ```
 Como a Bronze usa `MERGE` por `event_id`, reprocessar do início **não** duplica dados.
+O job Scala guarda o checkpoint no volume `delivery-sla-checkpoints`; como grava por
+upsert, apagá-lo também só reprocessa.
 </details>
 
 <details>
@@ -621,24 +749,61 @@ dependências; se rodar jobs isolados, garanta que a Bronze/Silver foram criadas
 Verifique `SCHEMA_REGISTRY_URL` e a saúde do serviço:
 ```bash
 curl http://localhost:8081/subjects
-make check          # health-check de todos os componentes
+docker compose ps schema-registry
 ```
 Dentro do Docker a URL é `http://schema-registry:8081`; no host, `http://localhost:8081`.
+(`make check` roda `scripts/check_pipeline.py` no host e precisa das dependências
+Python instaladas.)
+</details>
+
+<details>
+<summary><b>7. Conector do MongoDB com tarefas FAILED</b></summary>
+
+Esperado depois de uma queda do MongoDB: o sink para em vez de descartar
+registros. Com o MongoDB de volta:
+```bash
+docker compose up connect-init     # reinicia as tarefas FAILED e espera RUNNING
+curl -s 'http://localhost:8083/connectors?expand=status'
+```
+As tarefas continuam do último offset confirmado. O erro aparece em
+`docker compose logs connect`.
+</details>
+
+<details>
+<summary><b>8. Docker Desktop cai no Windows com a stack completa</b></summary>
+
+Visto durante o desenvolvimento quando a memória comprometida do Windows chegava ao
+limite (a VM do WSL2 com ~8 GB e outros apps abertos). Feche aplicativos ou limite
+a VM em `%UserProfile%\.wslconfig` (`[wsl2]` / `memory=10GB`), rode `wsl --shutdown`
+e abra o Docker Desktop de novo. Se o Kafka não subir depois disso
+(`NodeExistsException` no log), ele se recupera sozinho no próximo restart: o nó
+efêmero antigo no ZooKeeper expira em segundos.
 </details>
 
 ---
 
 ## 🧪 Testes
 
+| O quê | Como | Onde roda |
+|---|---|---|
+| Python: produtores, jobs Spark, consultas do painel, consulta ao MongoDB | pytest com `SparkSession` local + Delta, sem Kafka (o teste marcado `RUN_KAFKA_IT=1` exige broker) | `make test` / CI |
+| Python: lint e tipos | black, flake8, mypy | `make lint` / CI |
+| Java: `order-status-service` | `TopologyTestDriver` + Schema Registry `mock://`, sem broker | `./gradlew test` / CI |
+| Scala: `delivery-sla-job` | ScalaTest + `MemoryStream`, `TestGroupState`, Delta local, sem Kafka nem MongoDB | `sbt test` / CI |
+| Ponta a ponta | `scripts/smoke_e2e.sh`: stack real, os dois caminhos até o MongoDB | local / CI |
+
+Sem Java ou sbt instalados, os testes JVM rodam em contêiner:
+
 ```bash
-make test-unit          # lógica pura (Delta utils, Kafka utils mockado, producer)
-make test-integration   # enrichment (join/watermark) e aggregation (janelas/merge)
-make test-e2e           # fluxo completo Bronze → Silver → Gold
-make lint               # black + flake8 + mypy
+docker run --rm -v "${PWD}:/src" -w /src/order-status-service eclipse-temurin:17-jdk ./gradlew test
+docker run --rm -v "${PWD}:/src" -w /src/delivery-sla-job \
+  sbtscala/scala-sbt:eclipse-temurin-jammy-11.0.22_7_1.9.9_2.12.18 sbt test
 ```
 
-Os testes de integração/e2e usam uma `SparkSession` local com Delta (sem Kafka),
-exceto o teste marcado `RUN_KAFKA_IT=1`, que exige um broker rodando.
+O [CI](.github/workflows/ci.yml) roda em todo push: lint e testes Python (cache do
+pip e do Ivy), testes Java (cache do Gradle), testes Scala (cache do sbt), build de
+todas as imagens (e a checagem de que as imagens Spark Python usam Java 17) e o
+teste ponta a ponta com senhas do MongoDB geradas na hora.
 
 ---
 
@@ -647,52 +812,17 @@ exceto o teste marcado `RUN_KAFKA_IT=1`, que exige um broker rodando.
 ```
 producers/      # Avro producers (base + orders/payments/delivery) e schemas .avsc
 spark_jobs/     # ingestion, enrichment, aggregation, runner, utils (kafka/delta)
-dashboard/      # Streamlit app + queries Delta
-scripts/        # create_topics, register_schemas, seed_data, check_pipeline, smoke_order_status.sh, gen_env.sh
+dashboard/      # Streamlit: painel do Gold (Delta) e página de consulta no MongoDB
+scripts/        # create_topics, register_schemas, seed_data, check_pipeline, gen_env.sh, up.sh, smoke_e2e.sh
 order-status-service/  # Kafka Streams (Java 17, Gradle): estado por pedido + alertas
 connect/        # imagem do Kafka Connect + MongoDB sink, configs dos conectores e registro
 mongo/init/     # usuários de menor privilégio e índices do olist_serving
 delivery-sla-job/  # Spark Structured Streaming em Scala (sbt): linha do tempo de entrega + SLA
 monitoring/     # Prometheus + provisioning e dashboard Grafana
-tests/          # unit, integration, e2e
+tests/          # testes Python: unit, integration, e2e
+docs/img/       # capturas usadas neste README
+.github/workflows/ci.yml  # CI: Python, Java, Scala, imagens e teste ponta a ponta
 ```
-
----
-
-## 💼 LinkedIn Post
-
-> 🚀 **Construí um pipeline de streaming end-to-end com garantia exactly-once — e
-> documentei cada decisão técnica.**
->
-> Peguei o dataset público de e-commerce da Olist (~100k pedidos) e o transformei
-> em um fluxo **em tempo real**: produtores reproduzem o ciclo de vida de cada
-> pedido (CREATED → APPROVED → SHIPPED → DELIVERED/CANCELED) em Kafka, e o Spark
-> Structured Streaming processa tudo em uma arquitetura Medallion sobre Delta Lake,
-> alimentando um dashboard ao vivo que atualiza a cada 5 segundos.
->
-> Três diferenciais técnicos que fazem este projeto ir além de um "tutorial":
->
-> 𝟭. 𝗘𝘅𝗮𝗰𝘁𝗹𝘆-𝗼𝗻𝗰𝗲 𝗱𝗲 𝘃𝗲𝗿𝗱𝗮𝗱𝗲, 𝗻𝗮̃𝗼 𝘀𝗼́ 𝗻𝗼 𝘀𝗹𝗶𝗱𝗲. A semântica é garantida pela
-> combinação de checkpoint do Structured Streaming com `MERGE` idempotente no Delta
-> por `event_id`. Resultado: posso reprocessar offsets, derrubar o job no meio de
-> um batch, reiniciar — e a tabela Bronze nunca duplica uma linha. Mostro o código
-> exato que implementa isso.
->
-> 𝟮. 𝗖𝗼𝗻𝘁𝗿𝗼𝗹𝗲 𝗲𝘅𝗽𝗹𝗶́𝗰𝗶𝘁𝗼 𝗱𝗲 𝗹𝗮𝘁𝗲 𝗱𝗮𝘁𝗮 𝗲 𝗯𝗮𝗰𝗸𝗽𝗿𝗲𝘀𝘀𝘂𝗿𝗲. Watermark de 10 minutos
-> limita o estado das agregações em janela (1min/30s e 5min/1min), e
-> `maxOffsetsPerTrigger`/`maxFilesPerTrigger` controlam o volume por micro-batch —
-> os dois calos clássicos que derrubam pipelines de streaming em produção.
->
-> 𝟯. 𝗢𝗯𝘀𝗲𝗿𝘃𝗮𝗯𝗶𝗹𝗶𝗱𝗮𝗱𝗲 𝗱𝗲𝘀𝗱𝗲 𝗼 𝗱𝗶𝗮 𝘇𝗲𝗿𝗼. Métricas Prometheus nos produtores
-> (throughput e error rate), taxas de entrada/processamento do Spark no Grafana, e um
-> `check_pipeline.py` que valida Kafka, Schema Registry, Spark, Delta, dashboard e
-> Prometheus em um comando.
->
-> Stack: Kafka 7.5 + Schema Registry + Avro · Spark 3.4 Structured Streaming ·
-> Delta Lake 2.4 · Streamlit · Prometheus/Grafana · Docker Compose · pytest.
-> Tudo sobe com `make up-all`.
->
-> #DataEngineering #ApacheSpark #Kafka #DeltaLake #Streaming #Python
 
 ---
 

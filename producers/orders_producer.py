@@ -13,7 +13,9 @@ category. For every order it emits a realistic lifecycle:
 
 with a configurable probability (default 12%) of ``ORDER_CANCELED`` after
 approval. Each event is timestamped at emission time so that the downstream
-windowed aggregations always reflect *live* activity.
+windowed aggregations always reflect *live* activity. The order's business
+dates from the CSV (purchase, estimated delivery, delivery to the customer)
+travel on every event as optional fields, for delivery-SLA analysis.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ import random
 import time
 import uuid
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -48,6 +51,11 @@ class OrderEvent:
         seller_id: First seller on the order, if known.
         payment_value: Total order value, if known.
         product_category: Resolved product category, if known.
+        purchase_ts: CSV ``order_purchase_timestamp`` (epoch ms), if present.
+        estimated_delivery_ts: CSV ``order_estimated_delivery_date`` (epoch
+            ms), if present.
+        delivered_customer_ts: CSV ``order_delivered_customer_date`` (epoch
+            ms), if present.
     """
 
     event_id: str
@@ -60,6 +68,31 @@ class OrderEvent:
     seller_id: str | None = None
     payment_value: float | None = None
     product_category: str | None = None
+    purchase_ts: int | None = None
+    estimated_delivery_ts: int | None = None
+    delivered_customer_ts: int | None = None
+
+
+def _csv_ts_ms(value: str | None) -> int | None:
+    """Parse an Olist CSV timestamp (``YYYY-MM-DD[ HH:MM:SS]``, UTC) to epoch ms.
+
+    Args:
+        value: The CSV cell; empty or missing for orders that never reached
+            that milestone.
+
+    Returns:
+        Epoch milliseconds, or ``None`` when the cell is empty or malformed.
+    """
+    if not value or not value.strip():
+        return None
+    text = value.strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            parsed = datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        return int(parsed.timestamp() * 1000)
+    return None
 
 
 class OrdersProducer(BaseProducer):
@@ -174,6 +207,15 @@ class OrdersProducer(BaseProducer):
                     "seller_id": seller_id,
                     "payment_value": round(value, 2),
                     "product_category": self._order_categories.get(oid),
+                    # Business dates from the CSV, carried on every event of
+                    # the order. Older sample CSVs lack them: None.
+                    "purchase_ts": _csv_ts_ms(row.get("order_purchase_timestamp")),
+                    "estimated_delivery_ts": _csv_ts_ms(
+                        row.get("order_estimated_delivery_date")
+                    ),
+                    "delivered_customer_ts": _csv_ts_ms(
+                        row.get("order_delivered_customer_date")
+                    ),
                 }
 
     def _new_event(self, order: dict[str, Any], event_type: str) -> OrderEvent:
@@ -197,6 +239,9 @@ class OrdersProducer(BaseProducer):
             seller_id=order["seller_id"],
             payment_value=order["payment_value"],
             product_category=order["product_category"],
+            purchase_ts=order.get("purchase_ts"),
+            estimated_delivery_ts=order.get("estimated_delivery_ts"),
+            delivered_customer_ts=order.get("delivered_customer_ts"),
         )
 
     def _build_event(self, row: dict[str, Any]) -> OrderEvent:

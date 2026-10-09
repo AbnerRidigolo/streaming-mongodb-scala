@@ -70,7 +70,7 @@ de negócio atualizadas a cada 5 segundos. Observabilidade completa com
 
 ## 🚀 Como rodar
 
-Só precisa de Docker (com ≥ 8 GB de RAM; a stack completa usa ~5,7 GiB, ver
+Só precisa de Docker (com ≥ 10 GB de RAM; a stack completa usa ~8 GiB, ver
 [consumo medido](#consumo-de-memória-medido)) e Git
 (no Windows, rode os scripts `.sh` pelo Git Bash); funciona igual no Windows,
 macOS e Linux.
@@ -116,6 +116,7 @@ Com `make` disponível, `make up-all` gera o `.env` se faltar e sobe tudo;
 | order-status-service (Kafka Streams) | http://localhost:8088/orders/{order_id} |
 | Consulta de pedido (MongoDB) | http://localhost:8501/Consulta_de_pedido |
 | Kafka Connect (REST) | http://localhost:8083/connectors?expand=status |
+| Spark UI (delivery-sla-job, Scala) | http://localhost:4041 |
 | MongoDB | `mongodb://localhost:27018` (só em 127.0.0.1; porta em `MONGO_HOST_PORT`) |
 
 ---
@@ -399,24 +400,128 @@ As senhas do CI são geradas na hora por `scripts/gen_env.sh`.
 - A linha do tempo da página mostra os marcos na ordem dos horários dos eventos,
   que nem sempre é a ordem do negócio (ver limitações do serviço acima).
 
-### Consumo de memória medido
+---
+
+## ⏱️ `delivery-sla-job` — linha do tempo de entrega e SLA (Scala)
+
+**Papel no pipeline:** o `order-status-service` diz em que pé está o pedido; este
+job responde "a entrega cumpriu o prazo prometido?" e "qual o SLA por estado e
+região?". Ele lê `orders-raw` e `delivery-events`, mantém uma linha do tempo de
+entrega por pedido e compara a entrega real com a data estimada da Olist.
+
+```
+orders-raw ──────┐   decode Avro com o                        ┌─► Delta gold /data/gold/delivery_timeline (MERGE)
+                 ├─► schema do escritor ─► groupByKey ─► flatMapGroupsWithState ─┤
+delivery-events ─┘   (Schema Registry)    (order_id)   (estado por pedido)      ├─► olist_serving.delivery_timeline
+                                                                                 └─► olist_serving.delivery_sla
+                                                    (recalculado do gold a cada micro-batch: UF, região, Brasil)
+```
+
+**Por que Scala** (o resto do Spark do projeto é Python):
+
+- **Estado arbitrário tipado.** `flatMapGroupsWithState` com estado próprio
+  (`OrderDeliveryState`, uma case class) e timeout só existe nas APIs
+  Scala/Java. No PySpark 3.4 o equivalente (`applyInPandasWithState`) recebe os
+  eventos como DataFrames pandas e o estado como tupla com schema declarado em
+  string: nada é checado antes de rodar, e cada grupo passa por Arrow.
+- **Datasets tipados de ponta a ponta.** `Dataset[DeliveryInput]` →
+  `Dataset[DeliveryTimeline]` → `Dataset[SlaSummary]`, com case classes: um
+  campo errado ou um `Option` esquecido falha na compilação, não no meio do
+  stream.
+- **Lógica testável sem Spark.** A fusão de eventos é uma função pura sobre case
+  classes (`OrderDeliveryState.add`), testada sem SparkSession.
+
+**Decisões técnicas**
+
+| Decisão | Por quê |
+|---|---|
+| Datas de negócio nos eventos de pedido | Os eventos são carimbados na emissão e um ciclo do replay dura segundos: medir atraso por eles não diria nada. `order_event.avsc` ganhou `purchase_ts`, `estimated_delivery_ts` e `delivered_customer_ts` (opcionais, `default: null`, compatível BACKWARD), vindos das colunas do CSV da Olist. |
+| Campos novos **no fim** do record | O `ingestion_job` (Python) decodifica com um schema fixo no código, sem consultar o Registry; campos acrescentados no fim são ignorados por ele. Um teste de integração (`test_avro_reader_ignores_fields_appended_to_order_event`) garante isso. |
+| Decodificação com o schema do escritor | O job lê o id do schema no header Confluent e busca o schema no Registry (com cache). Assim lê igual mensagens antigas (sem as datas → `None`) e novas. Não usei o `kafka-avro-serializer` da Confluent para não trazer Guava e kafka-clients em versões que brigam com o classpath do Spark. Registro ilegível é logado e descartado. |
+| `groupByKey(order_id)` | O Spark faz shuffle por hash da chave, então os eventos de um pedido se encontram no mesmo estado qualquer que seja a partição Kafka de origem. Os produtores particionam por CRC32 (librdkafka) e os tópicos têm 3 e 2 partições: nada aqui depende de co-particionamento. |
+| Estado comutativo | Marco = menor timestamp; último status do transportador = maior timestamp (empate vai para a etapa posterior); datas de negócio = menor valor. Chegada fora de ordem ou repetida converge para o mesmo estado (testado com as 120 ordens de 5 eventos). |
+| Timeout por tempo de processamento (`STATE_TTL`, 1 h) | Pedido sem evento novo há 1 h sai do estado (a linha do tempo já foi gravada). O estado fica limitado aos pedidos ativos. |
+| SLA no tempo de negócio | `LATE` quando a entrega ao cliente passa do dia estimado (a Olist dá uma data, 00:00); `delay_days` = entrega − data estimada (negativo = adiantado). `PENDING` sem entrega, `UNKNOWN` sem data estimada, `CANCELED` excluído do SLA. Regiões do IBGE. |
+| `foreachBatch` com upserts | Cada micro-batch: MERGE no Delta gold por `order_id`, upsert no MongoDB (`_id = order_id`, MongoDB Spark Connector 10.4.1) e SLA recalculado de toda a tabela gold (`_id = scope:key`). Como tudo é upsert por chave, repetir um batch após falha dá o mesmo resultado. |
+
+**Exemplo real** (`olist_serving.delivery_timeline`, amostra sintética):
+
+```js
+{
+  _id: 'order_000170', order_id: 'order_000170', customer_state: 'MG', region: 'Sudeste',
+  delivery_status: 'DELIVERED', sla_status: 'LATE',
+  delay_days: 10.42, promised_days: 23.17, actual_days: 33.58,
+  purchase_ts: ISODate('2024-08-27T20:00:00Z'), estimated_delivery_ts: ISODate('2024-09-20T00:00:00Z'),
+  delivered_customer_ts: ISODate('2024-09-30T10:00:00Z'),
+  created_at: ISODate('2026-10-08T17:59:36.378Z'), shipped_at: ..., in_transit_at: ...,
+  out_for_delivery_at: ..., delivered_at: ..., last_carrier_status: 'DELIVERED', ...
+}
+```
+
+`delivery_sla` tem um documento por UF (`state:SP`), região (`region:Sudeste`) e
+o país (`all:BR`): `delivered_orders`, `on_time_orders`, `late_orders`,
+`on_time_rate`, `avg_delay_days_when_late`, `avg_promised_days`,
+`avg_actual_days`, `pending_orders`, `canceled_orders`.
+
+**Como usar** (sobe junto com `docker compose up -d --build`; Spark UI em http://localhost:4041):
+
+```bash
+docker compose exec mongo sh -c 'mongosh "mongodb://dashboard:$MONGO_DASHBOARD_PASSWORD@localhost:27017/olist_serving?authSource=admin"'
+> db.delivery_sla.find({scope: "region"}).sort({on_time_rate: 1})
+> db.delivery_timeline.find({sla_status: "LATE"}).sort({delay_days: -1}).limit(5)
+```
+
+**Testes** (`delivery-sla-job/src/test`, ScalaTest, sem Kafka nem MongoDB; no CI):
+lógica do estado (todas as ordens de chegada, duplicatas, cancelamento, SLA e
+regiões), `MemoryStream` com 3 partições passando por `foreachBatch` (estado entre
+micro-batches, só pedidos tocados saem), `TestGroupState` para o TTL, o sink contra
+Delta com um escritor de documentos em memória (inclusive batch repetido) e a
+decodificação Avro com os `.avsc` dos produtores (com e sem as datas, registro
+corrompido). Rodar: `cd delivery-sla-job && sbt test`, ou via Docker:
+`docker run --rm -v "${PWD}:/src" -w /src/delivery-sla-job sbtscala/scala-sbt:eclipse-temurin-jammy-11.0.22_7_1.9.9_2.12.18 sbt test`.
+
+**Limitações conhecidas**
+
+- A amostra sintética gerada antes desta fase não tem as datas: os pedidos saem
+  `UNKNOWN`. Para gerar de novo: `docker compose run --rm --no-deps init python scripts/seed_data.py --sample`
+  e reinicie os produtores. Eventos antigos que ainda estão nos tópicos também saem sem datas.
+- O replay sorteia o cancelamento (12%) a cada passada pelo CSV e reusa os
+  `order_id`; como o estado guarda o cancelamento mais antigo, um pedido cancelado
+  em qualquer passada fica `CANCELED` (na primeira medição, ~23% dos pedidos).
+- Os marcos do transportador são horários de emissão de produtores independentes
+  (`delivered_at` pode vir antes de `in_transit_at`); o SLA não usa esses horários.
+- Os testes desligam `spark.sql.streaming.noDataMicroBatches.enabled`: com timeout
+  por tempo de processamento cada trigger roda um batch sem dados e
+  `processAllAvailable()` nunca veria o stream parado. O TTL é testado com
+  `TestGroupState`; a expiração dentro de uma query rodando não tem teste automatizado.
+- O SLA é recalculado lendo toda a tabela gold a cada micro-batch: simples e
+  correto para dezenas de milhares de pedidos, mas não escala sem agregação incremental.
+- O CI roda os testes Scala e constrói a imagem, mas o teste de fumaça ainda não
+  sobe este job (planejado para a fase 4); ele foi verificado à mão com a stack.
+
+---
+
+## Consumo de memória medido
 
 `docker stats` em 2026-10-08, Docker Desktop (WSL2) no Windows, amostra sintética:
 
 | Serviço | RAM |
 |---|---|
 | `spark-pipeline` | 2,5 GiB |
+| `delivery-sla-job` (driver `1g`, `local[2]`) | 2,3 GiB |
 | `connect` (heap `-Xmx512m`) | 0,9 GiB |
 | `kafka` | 0,5–0,7 GiB |
 | `schema-registry`, `kafka-ui` | ~0,35 GiB cada |
-| `mongo` | 0,3 GiB |
+| `mongo` | 0,2–0,3 GiB |
 | `order-status-service` | 0,24 GiB |
 | demais (zookeeper, grafana, prometheus, dashboard, 3 produtores) | ~0,55 GiB |
-| **Total** | **~5,7 GiB** (3,1 GiB sem o `spark-pipeline`) |
+| **Total** | **~8 GiB** (soma das medições) |
 
-O dashboard abre uma SparkSession própria quando alguém visita a página
-principal; esse acréscimo não foi medido. A Fase 2 somou ~1,2 GiB (MongoDB +
-Connect) aos ~4,7 GiB da stack anterior.
+Os números foram medidos em rodadas diferentes (a máquina não aguentou tudo junto
+com folga) e somados; a stack inteira de uma vez não foi medida. Dê ao Docker
+**10 GB ou mais** para rodar tudo; sem o `spark-pipeline` e o `delivery-sla-job`
+ficam ~3,2 GiB. O dashboard abre uma SparkSession própria quando alguém visita a
+página principal; esse acréscimo não foi medido.
 
 Na máquina usada para medir (32 GB, com navegador, IDEs e outros apps abertos),
 o Docker Desktop caiu algumas vezes ao rodar a stack completa junto com testes
@@ -547,6 +652,7 @@ scripts/        # create_topics, register_schemas, seed_data, check_pipeline, sm
 order-status-service/  # Kafka Streams (Java 17, Gradle): estado por pedido + alertas
 connect/        # imagem do Kafka Connect + MongoDB sink, configs dos conectores e registro
 mongo/init/     # usuários de menor privilégio e índices do olist_serving
+delivery-sla-job/  # Spark Structured Streaming em Scala (sbt): linha do tempo de entrega + SLA
 monitoring/     # Prometheus + provisioning e dashboard Grafana
 tests/          # unit, integration, e2e
 ```

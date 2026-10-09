@@ -70,6 +70,27 @@ jobs:
             order-status-service/gradle/wrapper/gradle-wrapper.properties
       - run: ./gradlew --no-daemon test
 
+  scala-delivery-sla-job:
+    name: Scala tests (delivery-sla-job, ScalaTest + MemoryStream)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: delivery-sla-job
+    steps:
+      - uses: actions/checkout@v4
+      # Java 11, like the runtime image (apache/spark:3.4.1-scala2.12-java11).
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11"
+          cache: sbt
+          cache-dependency-path: |
+            delivery-sla-job/build.sbt
+            delivery-sla-job/project/build.properties
+            delivery-sla-job/project/plugins.sbt
+      - uses: sbt/setup-sbt@v1
+      - run: sbt -batch test
+
   docker-build:
     name: Docker images build
     runs-on: ubuntu-latest

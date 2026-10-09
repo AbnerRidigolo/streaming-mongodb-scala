@@ -11,6 +11,8 @@
   "document.id.strategy.overwrite.existing": "true",
   "writemodel.strategy": "com.mongodb.kafka.connect.sink.writemodel.strategy.ReplaceOneBusinessKeyStrategy",
   "errors.tolerance": "all",
+  "mongo.errors.tolerance": "none",
+  "mongo.errors.log.enable": "true",
   "errors.log.enable": "true",
   "errors.deadletterqueue.topic.name": "order-alerts-dlq",
   "errors.deadletterqueue.topic.replication.factor": "1",

@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
-# Smoke test of order-status-service and the MongoDB serving layer against the
-# real stack. Needs only Docker, curl and bash (Git Bash on Windows).
+# End-to-end check of both paths from Kafka into MongoDB, against the real
+# stack. Needs only Docker, curl and bash (Git Bash on Windows).
 #
-# Brings up Kafka, Schema Registry, init, the three producers, the service,
-# MongoDB and Kafka Connect, then checks that events flow end to end:
-#   - the interactive-query endpoint answers for a sample order and metrics
-#     count consumed events; order-status / order-alerts have Avro records;
-#   - both MongoDB sink connectors are RUNNING, the sample order's document in
-#     MongoDB has the status the service returns, alerts reach order_alerts,
-#     both dead-letter queues are empty and the dashboard user cannot write.
-# Prints what it saw.
+# Brings up Kafka, Schema Registry, init, the three producers, MongoDB and
+# both paths, then checks that events flow end to end:
+#   1. Kafka Streams + Kafka Connect: the interactive-query endpoint answers
+#      for a sample order and metrics count consumed events; order-status /
+#      order-alerts have Avro records; both MongoDB sink connectors are
+#      RUNNING, the sample order's document in MongoDB has the status the
+#      service returns, alerts reach order_alerts, both dead-letter queues are
+#      empty and the dashboard user cannot write.
+#   2. Scala Spark job: the sample order's delivery timeline reaches
+#      delivery_timeline with its estimated delivery date and an SLA status,
+#      delivery_sla has the country summary and the Delta gold table exists.
+# Prints what it saw. The Python Spark pipeline and the dashboards are not
+# started (they do not write to MongoDB).
 #
-# Usage: scripts/smoke_order_status.sh [timeout_seconds]
+# Usage: scripts/smoke_e2e.sh [timeout_seconds]
 set -euo pipefail
 
 TIMEOUT="${1:-300}"
@@ -20,7 +25,8 @@ CONNECT_URL="http://localhost:8083"
 # seed_data.py --sample names orders order_000000, order_000001, ...
 ORDER_ID="order_000000"
 SERVICES=(zookeeper kafka schema-registry init orders-producer payments-producer
-          delivery-producer order-status-service mongo connect connect-init)
+          delivery-producer order-status-service mongo connect connect-init
+          delivery-sla-job)
 
 cd "$(dirname "$0")/.."
 
@@ -82,12 +88,41 @@ statuses_match() {
   api=$(api_status) && mongo=$(mongo_status) && [ -n "$api" ] && [ "$api" = "$mongo" ]
 }
 
+delivery_sla_status() {
+  # SLA status of the sample order, only once it carries the estimated date
+  # (the business dates travel on order events; UNKNOWN means they did not).
+  mongo_eval "const d = db.delivery_timeline.findOne({_id: '$ORDER_ID'}); print(d && d.estimated_delivery_ts ? d.sla_status : '')"
+}
+
+delivery_ready() {
+  case "$(delivery_sla_status)" in
+    ON_TIME|LATE|PENDING|CANCELED) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+sla_ready() {
+  local delivered
+  delivered=$(mongo_eval "const d = db.delivery_sla.findOne({_id: 'all:BR'}); print(d ? Number(d.delivered_orders) : 0)")
+  [ "${delivered:-0}" -gt 0 ]
+}
+
+dlq_records() {
+  # Records ever written to the sinks' dead-letter queues (end offsets summed).
+  docker compose exec -T kafka kafka-get-offsets --bootstrap-server kafka:29092 \
+    --topic-partitions 'order-status-dlq:0,order-alerts-dlq:0' \
+    | tr -d '\r' | awk -F: '{ s += $3 } END { print s + 0 }'
+}
+
 # Compose refuses to start without the MongoDB passwords; adds only missing ones.
 scripts/gen_env.sh
 
 docker compose up -d --build "${SERVICES[@]}"
 
 wait_for "order-status-service healthy" "curl -fsS $SERVICE_URL/health"
+# init has created the topics by now; the check below only counts new
+# dead-letter records, so earlier incidents on a reused stack do not count.
+DLQ_BEFORE=$(dlq_records)
 wait_for "state for $ORDER_ID" "curl -fsS $SERVICE_URL/orders/$ORDER_ID"
 
 echo
@@ -143,15 +178,35 @@ if [ "$DENIED" != "Unauthorized" ]; then
 fi
 echo "ok: dashboard user is read-only (insert -> $DENIED)"
 
-DLQ=$(docker compose exec -T kafka kafka-get-offsets --bootstrap-server kafka:29092 \
-        --topic-partitions 'order-status-dlq:0,order-alerts-dlq:0')
-echo "== dead-letter queues (topic:partition:end offset)"
-echo "$DLQ"
-if echo "$DLQ" | grep -qvE ':0$'; then
-  echo "FAIL: records in a dead-letter queue" >&2
+DLQ_AFTER=$(dlq_records)
+echo "== dead-letter queues, records (start of run -> now): $DLQ_BEFORE -> $DLQ_AFTER"
+if [ "$DLQ_AFTER" -ne "$DLQ_BEFORE" ]; then
+  echo "FAIL: records reached a dead-letter queue during this run" >&2
   exit 1
 fi
+STATUS_JSON=$(curl -fsS "$CONNECT_URL/connectors?expand=status")
+if echo "$STATUS_JSON" | grep -q '"state":"FAILED"'; then
+  echo "FAIL: a connector task is FAILED: $STATUS_JSON" >&2
+  exit 1
+fi
+echo "ok: both sinks still RUNNING"
 
 MONGO_STATUS=$(mongo_status)
+echo "ok: path 1 (Kafka Streams + Kafka Connect): $ORDER_ID is $MONGO_STATUS in the API and in MongoDB"
+
+# ---- Path 2: Scala Spark job ----------------------------------------------
 echo
-echo "PASS: $ORDER_ID is $MONGO_STATUS in the API and in MongoDB"
+wait_for "delivery_timeline.$ORDER_ID with its estimated date (delivery-sla-job)" delivery_ready
+wait_for "delivery_sla all:BR with delivered orders" sla_ready
+wait_for "Delta gold table data/gold/delivery_timeline" "[ -d data/gold/delivery_timeline/_delta_log ]"
+
+echo
+echo "== MongoDB olist_serving.delivery_timeline, $ORDER_ID"
+mongo_eval "printjson(db.delivery_timeline.findOne({_id: '$ORDER_ID'}))"
+echo "== MongoDB olist_serving.delivery_sla (country and regions)"
+mongo_eval 'db.delivery_sla.find({scope: {$ne: "state"}}).sort({_id: 1}).forEach(d => print(d._id, "delivered:", Number(d.delivered_orders), "late:", Number(d.late_orders), "on_time_rate:", d.on_time_rate, "avg_delay_days_when_late:", d.avg_delay_days_when_late))'
+
+SLA_STATUS=$(delivery_sla_status)
+echo
+echo "PASS: path 1 (Kafka Streams + Connect): $ORDER_ID is $MONGO_STATUS in the API and in MongoDB;" \
+     "path 2 (Scala job): its delivery SLA is $SLA_STATUS"

@@ -1,8 +1,9 @@
 #!/bin/sh
 # Registers every connector in $CONNECTORS_DIR (<name>.json holds its config)
 # with PUT /connectors/<name>/config, which creates or updates it, so running
-# this again is safe. Then waits until each connector and its tasks are
-# RUNNING. POSIX sh + curl only (runs in the curlimages/curl image).
+# this again is safe. Restarts tasks left FAILED (the sinks stop on MongoDB
+# write errors instead of dropping records), then waits until each connector
+# and its tasks are RUNNING. POSIX sh + curl only (curlimages/curl image).
 set -eu
 
 CONNECT_URL="${CONNECT_URL:-http://connect:8083}"
@@ -31,13 +32,9 @@ done
 
 for file in "$CONNECTORS_DIR"/*.json; do
   name=$(basename "$file" .json)
+  restarted=no
   while :; do
     status=$(curl -sS "$CONNECT_URL/connectors/$name/status" || true)
-    case "$status" in
-      *'"state":"FAILED"'*)
-        echo "$name failed: $status" >&2
-        exit 1 ;;
-    esac
     # Connector plus at least one task, none of them in another state.
     running=$(printf '%s' "$status" | grep -o '"state":"[A-Z]*"' | grep -c RUNNING || true)
     others=$(printf '%s' "$status" | grep -o '"state":"[A-Z]*"' | grep -vc RUNNING || true)
@@ -45,6 +42,16 @@ for file in "$CONNECTORS_DIR"/*.json; do
       echo "$name: connector and $((running - 1)) task(s) RUNNING"
       break
     fi
+    case "$status" in
+      *'"state":"FAILED"'*)
+        if [ "$restarted" = no ]; then
+          # Resumes from the last committed offsets: nothing is skipped.
+          curl -sS -o /dev/null -X POST \
+            "$CONNECT_URL/connectors/$name/restart?includeTasks=true&onlyFailed=true" || true
+          echo "$name had FAILED tasks: restarted them"
+          restarted=yes
+        fi ;;
+    esac
     if past_deadline; then
       echo "$name not RUNNING in time: $status" >&2
       exit 1

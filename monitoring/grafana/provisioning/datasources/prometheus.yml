@@ -1,7 +1,17 @@
 apiVersion: 1
 
+# Earlier versions provisioned this datasource without a uid, so Grafana gave
+# it a random one and the dashboard (which asks for uid "prometheus") showed
+# no data. Changing the uid in place fails on an existing grafana-data volume;
+# delete it first and let the entry below recreate it.
+deleteDatasources:
+  - name: Prometheus
+    orgId: 1
+
 datasources:
   - name: Prometheus
+    # Fixed uid: the provisioned dashboard refers to the datasource by it.
+    uid: prometheus
     type: prometheus
     access: proxy
     url: http://prometheus:9090

@@ -113,6 +113,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      # Before the check, so the log and cleanup steps below work even if it
+      # fails early: compose needs the MongoDB passwords in .env.
+      - name: Generate throwaway MongoDB passwords
+        run: scripts/gen_env.sh
       - name: Run the stack and check both paths
         run: |
           set -o pipefail

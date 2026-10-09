@@ -12,6 +12,7 @@ import json
 import os
 import struct
 import uuid
+from pathlib import Path
 
 import fastavro
 import pytest
@@ -85,6 +86,39 @@ def test_parse_kafka_value_avro_keeps_epoch_millis(spark: SparkSession) -> None:
     assert row["event_type"] == "ORDER_CREATED"
     assert row["event_timestamp"] == ts_ms
     assert row["event_ts"] is not None
+
+
+def test_avro_reader_ignores_fields_appended_to_order_event(
+    spark: SparkSession,
+) -> None:
+    """Payloads written with the current .avsc still decode with ORDER_EVENT_AVRO.
+
+    ``from_avro`` decodes with the fixed ORDER_EVENT_AVRO, not the writer
+    schema from the registry. The optional business dates were appended at the
+    end of order_event.avsc, so the old reader reads every field it knows and
+    leaves the trailing bytes alone. A field added anywhere else would break
+    this test, and the Bronze ingestion with it.
+    """
+    avsc = Path(__file__).resolve().parents[2] / "producers/schemas/order_event.avsc"
+    writer = fastavro.parse_schema(json.loads(avsc.read_text(encoding="utf-8")))
+    event = json.loads(_event_json("e1", 1_700_000_000_123))
+    event.update(
+        purchase_ts=1_506_941_793_000,
+        estimated_delivery_ts=1_508_284_800_000,
+        delivered_customer_ts=1_507_670_713_000,
+    )
+    buf = io.BytesIO()
+    fastavro.schemaless_writer(buf, writer, event)
+    value = b"\x00" + struct.pack(">I", 2) + buf.getvalue()
+
+    raw = spark.createDataFrame([(bytearray(value),)], ["value"])
+    row = _parse_kafka_value(raw, "avro").collect()[0]
+
+    assert row["event_id"] == "e1"
+    assert row["customer_state"] == "SP"
+    assert row["event_timestamp"] == 1_700_000_000_123
+    assert row["metadata"]["producer_id"] == "pytest"
+    assert set(row.asDict()) == {f.name for f in ORDER_EVENT_SCHEMA.fields}
 
 
 def test_add_audit_columns_adds_partition_columns(spark: SparkSession) -> None:

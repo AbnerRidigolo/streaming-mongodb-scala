@@ -19,6 +19,12 @@
                                      { "name": "source",      "type": "string" },
                                      { "name": "version",     "type": "string", "default": "1.0" },
                                      { "name": "producer_id", "type": "string" }
-                                   ]} }
+                                   ]} },
+    { "name": "purchase_ts",           "type": ["null", { "type": "long", "logicalType": "timestamp-millis" }], "default": null,
+      "doc": "Olist order_purchase_timestamp (business time, not emission time)." },
+    { "name": "estimated_delivery_ts", "type": ["null", { "type": "long", "logicalType": "timestamp-millis" }], "default": null,
+      "doc": "Olist order_estimated_delivery_date: the delivery date promised to the customer." },
+    { "name": "delivered_customer_ts", "type": ["null", { "type": "long", "logicalType": "timestamp-millis" }], "default": null,
+      "doc": "Olist order_delivered_customer_date; null while undelivered." }
   ]
 }

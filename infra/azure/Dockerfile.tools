@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1
+# Azure CLI + Terraform in one image, so Phase 5 needs nothing on the host but
+# Docker. Build context: infra/azure.
+#   docker build -t olist-azure-tools -f Dockerfile.tools .
+FROM mcr.microsoft.com/azure-cli:2.67.0
+
+ARG TERRAFORM_VERSION=1.9.8
+ARG TERRAFORM_SHA256=186e0145f5e5f2eb97cbd785bc78f21bae4ef15119349f6ad4fa535b83b10df8
+
+RUN curl -fsSL -o /tmp/terraform.zip \
+      "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
+ && echo "${TERRAFORM_SHA256}  /tmp/terraform.zip" | sha256sum -c - \
+ && python3 -m zipfile -e /tmp/terraform.zip /usr/local/bin/ \
+ && chmod +x /usr/local/bin/terraform \
+ && rm /tmp/terraform.zip \
+ && terraform version
+
+WORKDIR /work

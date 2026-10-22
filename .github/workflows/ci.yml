@@ -99,11 +99,11 @@ jobs:
       # Compose needs the MongoDB passwords; random ones, only for this run.
       - run: scripts/gen_env.sh
       - run: docker compose build
-      # Spark 3.4 needs Java 8/11/17; fail if a base image drifts to Java 21.
       # Images outside docker compose: the Azure cloud producer and the
       # Azure CLI + Terraform tools image.
       - run: docker build -f producers/Dockerfile.cloud -t olist-cloud-producer .
       - run: docker build -f infra/azure/Dockerfile.tools -t olist-azure-tools infra/azure
+      # Spark 3.4 needs Java 8/11/17; fail if a base image drifts to Java 21.
       - name: Spark images run Java 17
         run: |
           for svc in spark-pipeline dashboard; do

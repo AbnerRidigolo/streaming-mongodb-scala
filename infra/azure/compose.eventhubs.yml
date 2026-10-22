@@ -1,0 +1,31 @@
+# Points the local delivery-sla-job at Azure Event Hubs instead of the local
+# Kafka: same image, same code, only configuration changes.
+#
+#   docker compose --env-file .env --env-file .env.azure \
+#     -f docker-compose.yml -f infra/azure/compose.eventhubs.yml up -d delivery-sla-job
+#
+# .env.azure (git-ignored) holds EVENTHUBS_BOOTSTRAP and
+# EVENTHUBS_LISTEN_CONNECTION_STRING from `terraform output` (see README).
+services:
+  delivery-sla-job:
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: ${EVENTHUBS_BOOTSTRAP:?missing in .env.azure (terraform output -raw kafka_bootstrap)}
+      # No Confluent Schema Registry on Event Hubs: Avro JSON, validated
+      # against the .avsc bundled in the JAR.
+      VALUE_FORMAT: json
+      KAFKA_CFG_SECURITY_PROTOCOL: SASL_SSL
+      KAFKA_CFG_SASL_MECHANISM: PLAIN
+      # $$ is a literal $ for Compose: the user name is "$ConnectionString".
+      KAFKA_CFG_SASL_JAAS_CONFIG: >-
+        org.apache.kafka.common.security.plain.PlainLoginModule required
+        username="$$ConnectionString"
+        password="${EVENTHUBS_LISTEN_CONNECTION_STRING:?missing in .env.azure (terraform output -raw listen_connection_string)}";
+      # Event Hubs recommendations for Kafka clients.
+      KAFKA_CFG_REQUEST_TIMEOUT_MS: "60000"
+      KAFKA_CFG_SESSION_TIMEOUT_MS: "30000"
+      KAFKA_CFG_METADATA_MAX_AGE_MS: "180000"
+      KAFKA_CFG_CONNECTIONS_MAX_IDLE_MS: "180000"
+      # Offsets of the Event Hubs topics are unrelated to the local ones:
+      # never reuse the local checkpoint.
+      CHECKPOINT_LOCATION: /checkpoints/delivery-sla-eventhubs
+      GOLD_TIMELINE_PATH: /data/gold/delivery_timeline_eventhubs

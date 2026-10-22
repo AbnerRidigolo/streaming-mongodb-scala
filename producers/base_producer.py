@@ -22,7 +22,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 
 import structlog
 from confluent_kafka import Producer
@@ -118,6 +118,58 @@ class EventMetadata:
 
 
 # ---------------------------------------------------------------------------
+# Environment-driven client settings (same code, different cluster)
+# ---------------------------------------------------------------------------
+
+#: Environment prefix for librdkafka settings: ``KAFKA_CFG_SECURITY_PROTOCOL``
+#: becomes ``security.protocol``. Lets the producers talk to a managed endpoint
+#: such as Azure Event Hubs (SASL_SSL, gzip) without code changes.
+KAFKA_CFG_PREFIX = "KAFKA_CFG_"
+
+VALUE_FORMATS = ("avro", "json")
+
+
+def kafka_config_from_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Return librdkafka settings declared as ``KAFKA_CFG_*`` variables.
+
+    Args:
+        env: Environment mapping (defaults to :data:`os.environ`).
+
+    Returns:
+        A dict of librdkafka property names (lower case, dotted) to values.
+    """
+    source: Mapping[str, str] = os.environ if env is None else env
+    return {
+        name[len(KAFKA_CFG_PREFIX) :].lower().replace("_", "."): value
+        for name, value in source.items()
+        if name.startswith(KAFKA_CFG_PREFIX) and len(name) > len(KAFKA_CFG_PREFIX)
+    }
+
+
+def encode_avro_json(parsed_schema: Any, record: dict[str, Any]) -> bytes:
+    """Encode one record in Avro's JSON encoding (unions tagged by type).
+
+    The output is validated against the schema and decodes with any Avro
+    ``JsonDecoder`` given the same schema, so the ``.avsc`` contract still
+    holds where no Schema Registry is available.
+
+    Args:
+        parsed_schema: A schema parsed by :func:`fastavro.parse_schema`.
+        record: The record as a plain ``dict``.
+
+    Returns:
+        The UTF-8 JSON document for the record.
+    """
+    import io
+
+    from fastavro import json_writer
+
+    buf = io.StringIO()
+    json_writer(buf, parsed_schema, [record])
+    return buf.getvalue().strip().encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
 # Base producer
 # ---------------------------------------------------------------------------
 
@@ -157,6 +209,7 @@ class BaseProducer(abc.ABC):
         schema_str: str | None = None,
         producer_id: str | None = None,
         source: str | None = None,
+        value_format: str | None = None,
     ) -> None:
         """Initialize the producer, Schema Registry client and Avro serializer.
 
@@ -174,6 +227,9 @@ class BaseProducer(abc.ABC):
                 ``PRODUCER_ID`` environment variable.
             source: Logical source name embedded in event metadata. Defaults to
                 the concrete class name.
+            value_format: ``"avro"`` (Confluent wire format, Schema Registry)
+                or ``"json"`` (Avro JSON encoding, no registry). Defaults to the
+                ``VALUE_FORMAT`` environment variable, then ``"avro"``.
         """
         self.topic = topic
         self.events_per_second = max(1, int(events_per_second))
@@ -190,25 +246,45 @@ class BaseProducer(abc.ABC):
             self._schema_str = schema_file.read_text(encoding="utf-8")
             schema_name = schema_file.name
 
-        # Schema Registry + serializers -------------------------------------
-        self._sr_client = SchemaRegistryClient({"url": schema_registry_url})
-        self._avro_serializer = AvroSerializer(
-            self._sr_client,
-            self._schema_str,
-            to_dict=lambda obj, ctx: self._event_to_dict(obj),
-            conf={"auto.register.schemas": True},
-        )
+        # Value serialization ------------------------------------------------
+        self.value_format = (
+            value_format or os.environ.get("VALUE_FORMAT") or "avro"
+        ).lower()
+        if self.value_format not in VALUE_FORMATS:
+            raise ValueError(f"VALUE_FORMAT must be one of {VALUE_FORMATS}")
+        if self.value_format == "avro":
+            self._sr_client = SchemaRegistryClient({"url": schema_registry_url})
+            self._avro_serializer = AvroSerializer(
+                self._sr_client,
+                self._schema_str,
+                to_dict=lambda obj, ctx: self._event_to_dict(obj),
+                conf={"auto.register.schemas": True},
+            )
+        else:
+            import json
+
+            from fastavro import parse_schema
+
+            self._parsed_schema = parse_schema(json.loads(self._schema_str))
         self._key_serializer = StringSerializer("utf_8")
 
         # Kafka producer -----------------------------------------------------
-        config = {"bootstrap.servers": bootstrap_servers, **self.PRODUCER_CONFIG}
+        # KAFKA_CFG_* variables override the defaults (e.g. SASL_SSL + gzip).
+        config = {
+            "bootstrap.servers": bootstrap_servers,
+            **self.PRODUCER_CONFIG,
+            **kafka_config_from_env(),
+        }
         self._producer = Producer(config)
 
         self._produced = 0
         self.log.info(
             "producer.initialized",
             bootstrap_servers=bootstrap_servers,
-            schema_registry_url=schema_registry_url,
+            schema_registry_url=(
+                schema_registry_url if self.value_format == "avro" else None
+            ),
+            value_format=self.value_format,
             events_per_second=self.events_per_second,
             schema=schema_name,
         )
@@ -295,14 +371,19 @@ class BaseProducer(abc.ABC):
     # ------------------------------------------------------------------ publish
 
     def _publish(self, event: Any, key: str | None = None) -> None:
-        """Serialize an event to Avro and enqueue it for delivery.
+        """Serialize an event (Avro or Avro-JSON) and enqueue it for delivery.
 
         Args:
             event: The event dataclass instance to publish.
             key: Optional partition key (e.g. ``order_id``).
         """
-        ctx = SerializationContext(self.topic, MessageField.VALUE)
-        value_bytes = self._avro_serializer(event, ctx)
+        if self.value_format == "avro":
+            ctx = SerializationContext(self.topic, MessageField.VALUE)
+            value_bytes = self._avro_serializer(event, ctx)
+        else:
+            value_bytes = encode_avro_json(
+                self._parsed_schema, self._event_to_dict(event)
+            )
         self._producer.produce(
             topic=self.topic,
             key=self._key_serializer(key) if key is not None else None,

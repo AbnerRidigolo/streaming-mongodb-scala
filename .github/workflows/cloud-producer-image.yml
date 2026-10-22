@@ -1,0 +1,42 @@
+name: Cloud producer image
+
+# Publishes producers/Dockerfile.cloud to GitHub Container Registry for the
+# Azure Container Apps Job (infra/azure). Runs on main when the producers
+# change, or by hand (Actions > Cloud producer image > Run workflow) from any
+# branch. After the first publish, make the package public once in the
+# package settings so Azure can pull it without credentials.
+on:
+  push:
+    branches: [main]
+    paths:
+      - producers/**
+      - scripts/seed_data.py
+      - scripts/cloud_producer.sh
+      - .github/workflows/cloud-producer-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Image name (GHCR needs lower case)
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/olist-cloud-producer" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: producers/Dockerfile.cloud
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:latest
+            ${{ steps.image.outputs.name }}:${{ github.sha }}

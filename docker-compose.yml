@@ -396,7 +396,8 @@ services:
   # -------------------------------------------------------------------------
   delivery-sla-job:
     build:
-      context: ./delivery-sla-job
+      context: .
+      dockerfile: delivery-sla-job/Dockerfile
     container_name: delivery-sla-job
     restart: unless-stopped
     depends_on:

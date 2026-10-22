@@ -13,6 +13,13 @@ import org.apache.avro.Schema
 import org.apache.avro.generic.{GenericDatumReader, GenericRecord}
 import org.apache.avro.io.DecoderFactory
 
+/** Turns one Kafka record value into an Avro record. One instance per
+  * partition: implementations cache readers and are not thread-safe.
+  */
+trait RecordDecoder {
+  def decode(topic: String, value: Array[Byte]): GenericRecord
+}
+
 /** Decodes Confluent wire-format Avro (magic byte 0, 4-byte schema id, body)
   * with the writer's own schema, fetched by id from Schema Registry.
   *
@@ -21,8 +28,10 @@ import org.apache.avro.io.DecoderFactory
   * (Spark's from_avro takes one fixed schema instead.) Not thread-safe: one
   * decoder per partition.
   */
-final class ConfluentAvroDecoder(schemaById: Int => Schema) {
+final class ConfluentAvroDecoder(schemaById: Int => Schema) extends RecordDecoder {
   private val readers = mutable.Map.empty[Int, GenericDatumReader[GenericRecord]]
+
+  def decode(topic: String, value: Array[Byte]): GenericRecord = decode(value)
 
   def decode(bytes: Array[Byte]): GenericRecord = {
     require(bytes != null && bytes.length > 5 && bytes(0) == 0,
@@ -30,6 +39,38 @@ final class ConfluentAvroDecoder(schemaById: Int => Schema) {
     val schemaId = ByteBuffer.wrap(bytes, 1, 4).getInt
     val reader = readers.getOrElseUpdate(schemaId, new GenericDatumReader[GenericRecord](schemaById(schemaId)))
     reader.read(null, DecoderFactory.get.binaryDecoder(bytes, 5, bytes.length - 5, null))
+  }
+}
+
+/** Decodes Avro's JSON encoding (VALUE_FORMAT=json), used where there is no
+  * Confluent Schema Registry, e.g. Azure Event Hubs. The writer schema is
+  * the producers' .avsc bundled in the JAR, so the contract still holds: a
+  * document that does not match it fails to decode and is skipped.
+  */
+final class AvroJsonDecoder(schemaForTopic: String => Schema) extends RecordDecoder {
+  private val readers = mutable.Map.empty[String, (Schema, GenericDatumReader[GenericRecord])]
+
+  def decode(topic: String, value: Array[Byte]): GenericRecord = {
+    val (schema, reader) = readers.getOrElseUpdate(topic, {
+      val s = schemaForTopic(topic)
+      (s, new GenericDatumReader[GenericRecord](s))
+    })
+    reader.read(null, DecoderFactory.get.jsonDecoder(schema, new String(value, StandardCharsets.UTF_8)))
+  }
+}
+
+/** The producers' .avsc files, bundled as resources of the JAR. */
+object BundledSchemas {
+  lazy val order: Schema = load("order_event.avsc")
+  lazy val delivery: Schema = load("delivery_event.avsc")
+
+  def forTopic(ordersTopic: String)(topic: String): Schema =
+    if (topic == ordersTopic) order else delivery
+
+  private def load(resource: String): Schema = {
+    val in = getClass.getResourceAsStream("/" + resource)
+    require(in != null, s"$resource is not on the classpath")
+    try new Schema.Parser().parse(in) finally in.close()
   }
 }
 
@@ -76,12 +117,12 @@ object EventMapping {
   /** Decodes one Kafka record; None (and a log line) when it cannot be read,
     * so one corrupt record does not stop the query.
     */
-  def decode(decoder: ConfluentAvroDecoder, ordersTopic: String)(
+  def decode(decoder: RecordDecoder, ordersTopic: String)(
       topic: String,
       value: Array[Byte]
   ): Option[DeliveryInput] =
     try {
-      val record = decoder.decode(value)
+      val record = decoder.decode(topic, value)
       Some(if (topic == ordersTopic) fromOrder(record) else fromDelivery(record))
     } catch {
       case NonFatal(e) =>

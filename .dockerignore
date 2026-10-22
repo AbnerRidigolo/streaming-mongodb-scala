@@ -1,7 +1,16 @@
-# Only scripts/Dockerfile builds from the repo root; keep its context small.
+# Several images build from the repo root (init, order-status-service,
+# delivery-sla-job, cloud-producer); keep that context small.
 .git
 data
 **/__pycache__
 .mypy_cache
 .pytest_cache
 spark-warehouse
+**/target
+**/build
+**/.gradle
+**/.bsp
+.env
+infra/azure/.terraform
+infra/azure/*.tfstate*
+infra/azure/terraform.tfvars

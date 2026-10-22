@@ -100,6 +100,10 @@ jobs:
       - run: scripts/gen_env.sh
       - run: docker compose build
       # Spark 3.4 needs Java 8/11/17; fail if a base image drifts to Java 21.
+      # Images outside docker compose: the Azure cloud producer and the
+      # Azure CLI + Terraform tools image.
+      - run: docker build -f producers/Dockerfile.cloud -t olist-cloud-producer .
+      - run: docker build -f infra/azure/Dockerfile.tools -t olist-azure-tools infra/azure
       - name: Spark images run Java 17
         run: |
           for svc in spark-pipeline dashboard; do
@@ -131,3 +135,19 @@ jobs:
       - name: Stop the stack
         if: always()
         run: docker compose down -v
+
+  terraform:
+    name: Terraform (fmt, validate) for infra/azure
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/azure
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - run: terraform fmt -check -recursive
+      # No backend and no credentials: checks syntax, types and provider schemas.
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate

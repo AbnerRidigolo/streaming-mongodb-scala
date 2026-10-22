@@ -21,7 +21,9 @@ object DeliverySlaJob {
       checkpointLocation: String,
       triggerSeconds: Int,
       maxOffsetsPerTrigger: Long,
-      stateTtl: String
+      stateTtl: String,
+      valueFormat: String,
+      kafkaOptions: Map[String, String]
   )
 
   object Config {
@@ -39,19 +41,44 @@ object DeliverySlaJob {
         checkpointLocation = get("CHECKPOINT_LOCATION", "/tmp/delivery-sla-checkpoints"),
         triggerSeconds = get("TRIGGER_SECONDS", "10").toInt,
         maxOffsetsPerTrigger = get("MAX_OFFSETS_PER_TRIGGER", "10000").toLong,
-        stateTtl = get("STATE_TTL", "1 hour")
+        stateTtl = get("STATE_TTL", "1 hour"),
+        valueFormat = {
+          val format = get("VALUE_FORMAT", "avro").toLowerCase
+          require(ValueFormats(format), s"VALUE_FORMAT must be one of ${ValueFormats.mkString(", ")}")
+          format
+        },
+        kafkaOptions = kafkaOptionsFrom(env)
       )
+    }
+
+    val ValueFormats: Set[String] = Set("avro", "json")
+
+    /** KAFKA_CFG_* variables as Spark Kafka source options:
+      * KAFKA_CFG_SECURITY_PROTOCOL -> kafka.security.protocol. Same names as
+      * the Python producers use, so one set of variables points both at a
+      * managed endpoint such as Azure Event Hubs (SASL_SSL).
+      */
+    def kafkaOptionsFrom(env: Map[String, String]): Map[String, String] = {
+      val prefix = "KAFKA_CFG_"
+      env.collect {
+        case (name, value) if name.startsWith(prefix) && name.length > prefix.length =>
+          "kafka." + name.stripPrefix(prefix).toLowerCase.replace('_', '.') -> value
+      }
     }
   }
 
-  /** Both topics, decoded with each record's writer schema. */
+  /** Both topics, decoded with each record's writer schema (Confluent Avro)
+    * or with the bundled .avsc (VALUE_FORMAT=json).
+    */
   def readEvents(spark: SparkSession, config: Config): Dataset[DeliveryInput] = {
     import spark.implicits._
     val registryUrl = config.schemaRegistryUrl
     val ordersTopic = config.ordersTopic
+    val valueFormat = config.valueFormat
     spark.readStream
       .format("kafka")
       .option("kafka.bootstrap.servers", config.bootstrapServers)
+      .options(config.kafkaOptions)
       .option("subscribe", s"${config.ordersTopic},${config.deliveryTopic}")
       .option("startingOffsets", "earliest")
       // Topics keep 12-24 h; after a long stop, skip what retention removed.
@@ -61,7 +88,9 @@ object DeliverySlaJob {
       .select($"topic", $"value")
       .as[(String, Array[Byte])]
       .mapPartitions { records =>
-        val decoder = new ConfluentAvroDecoder(SchemaRegistry.fetch(registryUrl))
+        val decoder: RecordDecoder =
+          if (valueFormat == "json") new AvroJsonDecoder(BundledSchemas.forTopic(ordersTopic))
+          else new ConfluentAvroDecoder(SchemaRegistry.fetch(registryUrl))
         val decode = EventMapping.decode(decoder, ordersTopic) _
         records.flatMap { case (topic, value) => decode(topic, value) }
       }
@@ -93,7 +122,7 @@ object DeliverySlaJob {
       .foreachBatch(writeBatch)
       .start()
 
-    println(s"delivery-sla-job started: ${config.ordersTopic} + ${config.deliveryTopic} -> " +
+    println(s"delivery-sla-job started (${config.valueFormat}): ${config.ordersTopic} + ${config.deliveryTopic} -> " +
       s"${config.mongoDatabase}.delivery_timeline / delivery_sla, ${config.goldTimelinePath}")
     query.awaitTermination()
   }

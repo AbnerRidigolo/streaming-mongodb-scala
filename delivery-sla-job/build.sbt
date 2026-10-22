@@ -26,8 +26,9 @@ lazy val root = (project in file("."))
     Test / javaOptions ++= Seq("-Xmx2g", "-Dspark.ui.enabled=false"),
     Test / parallelExecution := false,
     // The producers' .avsc files are the single source of truth for the input
-    // schemas; tests encode records with them.
-    Test / unmanagedResourceDirectories += baseDirectory.value / ".." / "producers" / "schemas",
+    // schemas: bundled in the JAR for VALUE_FORMAT=json, and tests encode
+    // records with them.
+    Compile / unmanagedResourceDirectories += baseDirectory.value / ".." / "producers" / "schemas",
     assembly / assemblyJarName := "delivery-sla-job.jar",
     assembly / test := {},
     assembly / assemblyMergeStrategy := {

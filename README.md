@@ -239,8 +239,10 @@ abaixo detalha as suas.
 - **Dois "SLA" diferentes.** O `delivery_sla_tier` do enrichment Python (SP = D+3,
   RJ/MG/ES = D+5, demais = D+8) é uma regra fixa, não vem dos dados; o SLA do job
   Scala compara a entrega real com a data estimada da Olist.
-- **Nuvem.** Nada roda fora do Docker local ainda (a fase com Azure é opcional e não
-  foi feita).
+- **Nuvem.** A Fase 5 (Azure) está pronta em código, mas **ainda não foi executada**:
+  o Terraform e o Scala no modo JSON/SASL só passaram por testes e pelo CI. Na Azure
+  rodam só os produtores; o Kafka Streams não roda no Event Hubs Standard e o job
+  Scala lê o Event Hubs a partir da máquina local. Ver a seção Azure.
 
 ---
 
@@ -628,6 +630,91 @@ corrompido). Rodar: `cd delivery-sla-job && sbt test`, ou via Docker:
 
 ---
 
+## ☁️ Azure — Event Hubs + Container Apps (Fase 5, opcional)
+
+**Papel:** mostrar que o pipeline sai do Docker local mudando só configuração. Na
+Azure rodam os **produtores**; o **job Scala** continua na sua máquina e lê do
+Event Hubs pelo mesmo source Kafka do Spark, gravando no MongoDB local.
+
+```
+Container Apps Job (produtores pedidos + entregas) ──SASL_SSL──► Event Hubs Standard (endpoint Kafka)
+                                                                    │
+                      delivery-sla-job (Scala, local) ◄─────────────┘ ──► MongoDB / Delta locais
+```
+
+| Decisão | Por quê |
+|---|---|
+| **Kafka Streams fica fora da Azure** | No Event Hubs o Kafka Streams só funciona nos planos Premium e Dedicated, e ainda em versão preliminar. Usamos o Standard (US$ 0,03/h por TU contra ~US$ 1,23/h por PU no Premium). O `order-status-service` segue no Docker local. |
+| **JSON do Avro, sem registry** | O Event Hubs não tem o Schema Registry da Confluent. Em vez de integrar o Azure Schema Registry (autenticação Entra ID e um formato de fio diferente nos dois lados), nesta fase os produtores publicam a codificação JSON do Avro (`VALUE_FORMAT=json`) validada pelos mesmos `.avsc`, e o job Scala lê com o `JsonDecoder` do Avro usando os `.avsc` embutidos no JAR. O contrato continua o mesmo; o que se perde é a evolução de schema negociada pelo registry. |
+| **Mesmo código, outra configuração** | Variáveis `KAFKA_CFG_*` viram propriedades do cliente Kafka nos produtores Python (`KAFKA_CFG_SECURITY_PROTOCOL` → `security.protocol`) e no job Scala (`kafka.security.protocol`). Para o Event Hubs: SASL_SSL, usuário `$ConnectionString`, compressão `gzip` (a única aceita; o padrão local é `lz4`) e `request.timeout.ms=60000`. |
+| **Menor privilégio** | Duas regras de acesso: só envio (segredo do Container App) e só leitura (job Scala local). As connection strings saem do Terraform como outputs sensíveis e vão para `.env.azure`, fora do git. |
+| **Job manual** | O Container Apps Job gera a amostra sintética, publica uma passada e termina: só cobra enquanto roda. |
+| **Guarda de custo** | Orçamento mensal no resource group (padrão 5) com alertas em 50% e 100% do gasto real e 100% do previsto; Log Analytics limitado a 0,5 GB/dia; tags em todos os recursos. |
+
+### Custo estimado (antes de rodar)
+
+Preços de lista em USD (página oficial): Event Hubs Standard US$ 0,03 por TU-hora +
+US$ 0,028 por milhão de eventos; Container Apps US$ 0,000024 por vCPU-s e
+US$ 0,000003 por GiB-s, com franquia mensal de 180.000 vCPU-s e 360.000 GiB-s.
+
+| Item | Por hora | Execução planejada (~3 h) |
+|---|---|---|
+| Event Hubs Standard, 1 TU | US$ 0,03 | US$ 0,09 |
+| Ingresso (~20 eventos/s) | ~US$ 0,002 | ~US$ 0,01 |
+| Container Apps Job (0,5 vCPU / 1 GiB, ~20 min) | US$ 0,054 sem franquia | US$ 0 com franquia (até ~US$ 0,02) |
+| Log Analytics, alerta de orçamento | ~US$ 0 | ~US$ 0 |
+| **Total** | | **~US$ 0,10 a 0,15** |
+
+O risco é esquecer o namespace ligado: ~US$ 22 por mês (1 TU × 730 h). Por isso o
+alerta de orçamento e o `terraform destroy` no fim. **Custo real medido: ainda não
+rodado** (preencher após a execução, pelo Cost Management).
+
+### Como rodar (só Docker; comandos para PowerShell)
+
+1. **Imagem do produtor.** Rode o workflow *Cloud producer image* no GitHub
+   (Actions → Run workflow). Depois, em *Packages* → `olist-cloud-producer` →
+   *Package settings*, torne o pacote **público** (a Azure baixa sem credenciais).
+2. **Ferramentas e login** (Azure CLI + Terraform num contêiner):
+   ```powershell
+   docker build -t olist-azure-tools -f infra/azure/Dockerfile.tools infra/azure
+   docker run --rm -it -v olist-azure-cli:/root/.azure olist-azure-tools az login --use-device-code
+   docker run --rm -v olist-azure-cli:/root/.azure olist-azure-tools az account show --query id -o tsv
+   ```
+3. **Variáveis:** copie `infra/azure/terraform.tfvars.example` para
+   `infra/azure/terraform.tfvars` (fora do git) e preencha `subscription_id` e
+   `budget_alert_emails`.
+4. **Criar os recursos:**
+   ```powershell
+   $tf  = "docker run --rm -it -v olist-azure-cli:/root/.azure -v ${PWD}/infra/azure:/work olist-azure-tools terraform"
+   # Sem -it para ler outputs (um terminal acrescentaria \r aos valores):
+   $tfo = "docker run --rm -v olist-azure-cli:/root/.azure -v ${PWD}/infra/azure:/work olist-azure-tools terraform output -raw"
+   iex "$tf init"
+   iex "$tf plan -out tfplan"
+   iex "$tf apply tfplan"
+   ```
+5. **Rodar o produtor na Azure:**
+   ```powershell
+   $rg  = iex "$tfo resource_group"
+   $job = iex "$tfo producer_job"
+   docker run --rm -v olist-azure-cli:/root/.azure olist-azure-tools az containerapp job start -g $rg -n $job
+   ```
+6. **Job Scala local lendo do Event Hubs** (stack local limpa, sem os produtores
+   locais, para o MongoDB receber só o que veio da Azure; a connection string vai
+   direto para `.env.azure`, sem aparecer na tela):
+   ```powershell
+   "EVENTHUBS_BOOTSTRAP=$(iex "$tfo kafka_bootstrap")" | Out-File -Encoding ascii .env.azure
+   "EVENTHUBS_LISTEN_CONNECTION_STRING=$(iex "$tfo listen_connection_string")" | Out-File -Encoding ascii -Append .env.azure
+   docker compose down -v   # apaga os dados locais (volumes) da stack
+   docker compose --env-file .env --env-file .env.azure -f docker-compose.yml -f infra/azure/compose.eventhubs.yml up -d --build delivery-sla-job
+   ```
+7. **Destruir tudo** assim que tirar os prints:
+   ```powershell
+   iex "$tf destroy"
+   ```
+   Confira no portal que o resource group sumiu. Apague `.env.azure`.
+
+---
+
 ## Consumo de memória medido
 
 `docker stats` em 2026-10-08, Docker Desktop (WSL2) no Windows, amostra sintética:
@@ -815,6 +902,7 @@ spark_jobs/     # ingestion, enrichment, aggregation, runner, utils (kafka/delta
 dashboard/      # Streamlit: painel do Gold (Delta) e página de consulta no MongoDB
 scripts/        # create_topics, register_schemas, seed_data, check_pipeline, gen_env.sh, up.sh, smoke_e2e.sh
 order-status-service/  # Kafka Streams (Java 17, Gradle): estado por pedido + alertas
+infra/azure/           # Terraform (Event Hubs + Container Apps Job), imagem de ferramentas, override do compose
 connect/        # imagem do Kafka Connect + MongoDB sink, configs dos conectores e registro
 mongo/init/     # usuários de menor privilégio e índices do olist_serving
 delivery-sla-job/  # Spark Structured Streaming em Scala (sbt): linha do tempo de entrega + SLA
